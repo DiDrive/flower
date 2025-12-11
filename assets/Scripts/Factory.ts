@@ -1,4 +1,5 @@
 import { _decorator, Component, Node, Vec3, Prefab, instantiate } from 'cc';
+import { ProductState } from './ProductState';
 import { PlayerController } from './PlayerController';
 const { ccclass, property } = _decorator;
 
@@ -25,18 +26,37 @@ export class Factory extends Component {
   @property({ min: 0, tooltip: '前方偏移量（Z负）' }) placedOffsetZ: number = 40;
   @property({ min: 0.1, tooltip: '面包拾取区域半径（XZ）' }) pickupRadius: number = 60;
   @property({ min: 0.1, tooltip: '面包拾取速率（个/秒）' }) pickupRate: number = 3;
+  @property({ min: 0, tooltip: '测试：半成品转成品的延时（秒）' }) finalizeDelaySec: number = 0;
 
   private accIn = 0;
   private accOut = 0;
   private queue = 0;
   private accPickup = 0;
   private placed: Node[] = [];
+  private finalizePend: { n: Node; t: number }[] = [];
 
   /**
    * 主循环：
    * 1) 取入花朵进入生产队列；2) 队列出面包并摆放；3) 玩家近距离拾取面包。
    */
   update(dt: number) {
+    if (this.finalizeDelaySec > 0) {
+      for (let i = this.finalizePend.length - 1; i >= 0; i--) {
+        const it = this.finalizePend[i];
+        it.t -= dt;
+        if (it.t <= 0) {
+          const ps = it.n.getComponentInChildren(ProductState);
+          if (ps) ps.setFinal();
+          this.finalizePend.splice(i, 1);
+        }
+      }
+      for (const n of this.placed) {
+        const already = this.finalizePend.find(x => x.n === n);
+        if (already) continue;
+        const ps = n.getComponentInChildren(ProductState);
+        if (ps && ps.getState() === 'semi') this.finalizePend.push({ n, t: this.finalizeDelaySec });
+      }
+    }
     const p = this.findPlayer();
     if (p) {
       const d = this.distanceTo(p.node.worldPosition);
@@ -58,6 +78,9 @@ export class Factory extends Component {
         if (this.breadPrefab && this.spawnRoot && this.placed.length < this.placedMax) {
           const n = instantiate(this.breadPrefab);
           n.parent = this.spawnRoot;
+          const ps = n.getComponentInChildren(ProductState);
+          if (ps) ps.setSemi();
+          if (this.finalizeDelaySec > 0) this.finalizePend.push({ n, t: this.finalizeDelaySec });
           const idx = this.placed.length;
           const col = idx % this.placedColumns;
           const row = Math.floor(idx / this.placedColumns);

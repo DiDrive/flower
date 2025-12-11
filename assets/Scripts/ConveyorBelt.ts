@@ -1,4 +1,5 @@
 import { _decorator, Component, Node, Vec3, MeshRenderer, Vec4 } from 'cc';
+import { ProductState } from './ProductState';
 const { ccclass, property } = _decorator;
 
 /**
@@ -10,6 +11,7 @@ const { ccclass, property } = _decorator;
 interface Rider {
   node: Node;
   distance: number;
+  finalized: boolean;
 }
 
 @ccclass('ConveyorBelt')
@@ -18,6 +20,7 @@ export class ConveyorBelt extends Component {
   @property({ type: MeshRenderer, tooltip: '传送带网格渲染器（用于UV滚动）' }) beltMesh: MeshRenderer | null = null;
   @property({ tooltip: '物品沿路径移动的速度（单位/秒）' }) speed: number = 1.5;
   @property({ tooltip: 'UV 滚动速度（偏移/秒）' }) uvScrollSpeed: number = 0.4;
+  @property({ min: 0, tooltip: '到该路径进度后转为成品（0-1）' }) finalizeProgress: number = 0.3;
 
   private riders: Rider[] = [];
   private positions: Vec3[] = [];
@@ -44,9 +47,11 @@ export class ConveyorBelt extends Component {
 
   /** 注册一个物品到传送带，初始位置为路径起点。 */
   registerItem(node: Node) {
-    this.riders.push({ node, distance: 0 });
+    this.riders.push({ node, distance: 0, finalized: false });
     const p = this.sample(0);
     node.setWorldPosition(p);
+    const ps = node.getComponentInChildren(ProductState);
+    if (ps) ps.setSemi();
   }
 
   update(dt: number) {
@@ -62,6 +67,12 @@ export class ConveyorBelt extends Component {
     for (let i = this.riders.length - 1; i >= 0; i--) {
       const r = this.riders[i];
       r.distance += speed * dt;
+      const threshold = this.totalLen * Math.max(0, Math.min(1, this.finalizeProgress));
+      if (!r.finalized && r.distance >= threshold) {
+        const ps = r.node.getComponentInChildren(ProductState);
+        if (ps) ps.setFinal();
+        r.finalized = true;
+      }
       if (r.distance >= this.totalLen) {
         // 到达终点，移除并钩子可在外部处理（例如喂给市场）
         this.riders.splice(i, 1);

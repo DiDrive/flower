@@ -487,70 +487,70 @@
             "from": 0,
             "to": 0.6666667,
             "wrapMode": 2,
-            "previousId": "63e6e"
+            "previousId": "1f586"
           },
           {
             "name": "run",
             "from": 0.7666667,
             "to": 1.3,
             "wrapMode": 2,
-            "previousId": "63e6e"
+            "previousId": "cf5ee"
           },
           {
             "name": "carry_idle",
             "from": 2.0333333,
             "to": 2.7,
             "wrapMode": 2,
-            "previousId": "63e6e"
+            "previousId": "f82cc"
           },
           {
             "name": "carry_run",
             "from": 1.4,
             "to": 1.9333333,
             "wrapMode": 2,
-            "previousId": "63e6e"
+            "previousId": "a97c1"
           },
           {
             "name": "scissors_idle",
             "from": 2.8,
             "to": 3.4666667,
             "wrapMode": 2,
-            "previousId": "63e6e"
+            "previousId": "adf4c"
           },
           {
             "name": "scissors_run",
             "from": 3.5666667,
             "to": 4.1,
             "wrapMode": 2,
-            "previousId": "63e6e"
+            "previousId": "11372"
           },
           {
             "name": "mow_idle",
             "from": 4.2,
             "to": 4.8666667,
             "wrapMode": 2,
-            "previousId": "63e6e"
+            "previousId": "30208"
           },
           {
             "name": "mow_run",
             "from": 4.9666667,
             "to": 5.5,
             "wrapMode": 2,
-            "previousId": "63e6e"
+            "previousId": "e2552"
           },
           {
             "name": "vacuum_idle",
             "from": 5.6,
             "to": 6.2666667,
             "wrapMode": 2,
-            "previousId": "63e6e"
+            "previousId": "a189c"
           },
           {
             "name": "vacuum_run",
             "from": 6.4333333,
             "to": 6.9666666984558105,
             "wrapMode": 2,
-            "previousId": "63e6e"
+            "previousId": "0cca4"
           }
         ]
       }

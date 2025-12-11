@@ -1,21 +1,39 @@
-import { _decorator, Component, Node, Vec3, tween, Animation, Vec2, Camera, Quat, SkeletalAnimation, AnimationClip } from 'cc';
+import { _decorator, Component, Node, Vec3, tween, Animation, Vec2, Camera, Quat, SkeletalAnimation } from 'cc';
 import { ResourceNode } from './ResourceNode';
 import { Joystick } from './Joystick';
 import { CollectStack } from './CollectStack';
 import { CollectItem } from './CollectItem';
+import { ActionStateMachine } from './ActionStateMachine';
 const { ccclass, property } = _decorator;
 
 /**
  * PlayerController 玩家控制器。
- * - 通过 `Joystick` 输入在 XZ 平面移动，并播放基础动画。
- * - 物品堆叠：花朵/面包/金币分别绑定到对应的 `CollectStack`。
+ *
+ * 动作系统（有限状态机）：
+ * - 状态集合：
+ *   idle/run、carry_idle/carry_run、scissors_idle/scissors_run、mow_idle/mow_run、vacuum_idle/vacuum_run。
+ * - 选择优先级：
+ *   1) 身上有面包 → carry_*；
+ *   2) 无面包且在采集范围 → 按 toolLevel 选择对应道具的 *_idle/_run；
+ *   3) 其它 → 常规 idle/run。
+ * - 移动判定：摇杆长度与死区 `moveDeadZone`（<阈值视为静止，≥视为移动）。
+ * - 采集范围：通过场景内 `ResourceNode.radius` 与 `CollectItem.pickupRadius` 在 XZ 平面上判定。
+ * - 道具等级：`toolLevel`（0=无、1=剪刀、2=割草、3=吸尘）。
+ * - 播放守护：仅当目标剪辑名与当前不同且播放成功时切换；失败回退到 `defaultClip` 或源 `Animation`。
+ * - 名称解析：支持逻辑名与导入器生成的 `*.animation` 资源名映射。
+ *
+ * 其它系统：
+ * - 物品堆叠：花朵/面包/金币分别绑定到对应的 `CollectStack`；动作携带状态以堆叠的真实数量判定。
  * - 相机跟随：`updateCamera` 实现软区、滞后与前置引导。
  * - 容量与交接冷却：限制总携带数量并避免同帧反复交互。
+ *
  * 使用：挂在玩家节点上，并关联摇杆、相机与各堆叠 Anchor。
  */
 @ccclass('PlayerController')
 export class PlayerController extends Component {
   @property({ min: 0.1, tooltip: '移动速度（单位/秒）' }) speed: number = 3;
+  @property({ min: 0, tooltip: '摇杆死区阈值' }) moveDeadZone: number = 0.2;
+  @property({ tooltip: '动作剪辑映射(JSON，可覆盖默认命名)' }) clipMapJson: string = '';
   @property({ min: 1, tooltip: '背包/堆叠容量上限' }) capacity: number = 5;
   @property({ type: Node, tooltip: '点击指示器（可选）' }) targetIndicator: Node | null = null;
   @property({ type: Animation, tooltip: '角色动画（idle/run）' }) anim: Animation | null = null;
@@ -31,6 +49,11 @@ export class PlayerController extends Component {
   @property({ min: 0, tooltip: '相机软区半径（XZ）' }) camSoftRadius: number = 2;
   @property({ min: 0, tooltip: '相机前置距离' }) camLead: number = 3;
   @property({ tooltip: '道具等级：0无、1剪刀、2割草、3吸尘' }) toolLevel: number = 0;
+  @property({ min: 0, tooltip: '收割动作退出维持时间（秒）' }) harvestHoldSec: number = 0.5;
+  @property({ type: Node, tooltip: '剪刀道具节点（等级1）' }) toolScissors: Node | null = null;
+  @property({ type: Node, tooltip: '割草机道具父节点（等级2）' }) toolMower: Node | null = null;
+  @property({ type: Node, tooltip: '三级机器/吸尘器节点（等级3）' }) toolVacuum: Node | null = null;
+  @property({ tooltip: '到采集范围内自动显示对应道具' }) autoToolVisibility: boolean = true;
 
   flowers = 0;
   breads = 0;
@@ -45,11 +68,20 @@ export class PlayerController extends Component {
       const a = this.node.getComponent(Animation) || this.node.getComponentInChildren(Animation);
       if (a) this.anim = a;
     }
+    this.machine = new ActionStateMachine(this.sa, this.anim, this.moveDeadZone);
+    if (this.clipMapJson) {
+      try {
+        const map = JSON.parse(this.clipMapJson);
+        if (map && typeof map === 'object') this.machine.setClipMap(map);
+      } catch {}
+    }
   }
   onEnable() {}
   onDisable() {}
 
   private handoffCooldown = 0;
+  private harvestHold = 0;
+  private machine: ActionStateMachine | null = null;
 
   /**
    * 平滑相机跟随。
@@ -81,16 +113,30 @@ export class PlayerController extends Component {
 
   /**
    * 玩家移动与动画更新。
-   * 根据摇杆方向与携带物品调整移动速度，并调用相机跟随。
+   * 步骤：
+   * 1) 更新交接冷却与摇杆向量。
+   * 2) 同步堆叠中的面包数量到 `breads`（以视觉堆叠为准）。
+   * 3) 小于死区 → 选择并播放 *_idle；否则计算移动、旋转并选择 *_run。
+   * 4) 仅在剪辑变化且播放成功时切换，最后更新相机位置。
    */
   update(dt: number) {
     if (this.handoffCooldown > 0) this.handoffCooldown = Math.max(0, this.handoffCooldown - dt);
     const cur = this.node.worldPosition;
     const stick = this.joystick?.dir ?? new Vec2(0, 0);
     const len = stick.length();
-    if (len < 1e-3) {
-      const idle = this.chooseClip(0);
-      if (this.anim) this.safePlay(idle);
+    if (this.breadStack) {
+      this.breads = this.breadStack.count();
+    }
+    const inHarvestRaw = this.isInHarvestArea();
+    if (inHarvestRaw)
+       this.harvestHold = this.harvestHoldSec;
+    else 
+      this.harvestHold = Math.max(0, this.harvestHold - dt);
+    const inHarvest = inHarvestRaw || this.harvestHold > 0;// 采集范围内或收割维持时间内
+    this.updateToolVisibility(inHarvest);
+    if (len < this.moveDeadZone) {
+      const next = this.machine?.decide(0, this.breads, this.toolLevel, inHarvest) ?? 'idle';
+      this.machine?.play(next);
       return;
     }
     const v = this.flowers + this.breads > 0 ? this.speed * 0.8 : this.speed;
@@ -107,47 +153,19 @@ export class PlayerController extends Component {
       const ny = cur.y + stick.y * v * dt;
       this.node.setWorldPosition(nx, ny, cur.z);
     }
-    const run = this.chooseClip(len);
-    this.safePlay(run);
+    const next = this.machine?.decide(len, this.breads, this.toolLevel, inHarvest) ?? 'run';
+    this.machine?.play(next);
     this.updateCamera(dt, stick);
   }
 
-  private chooseClip(len: number): string {
-    const moving = len >= 1e-3;
-    if (this.breads > 0) return moving ? 'carry_run' : 'carry_idle';
-    if (this.isInHarvestArea()) {
-      switch (this.toolLevel) {
-        case 1: return moving ? 'scissors_run' : 'scissors_idle';
-        case 2: return moving ? 'mow_run' : 'mow_idle';
-        case 3: return moving ? 'vacuum_run' : 'vacuum_idle';
-        default: return moving ? 'run' : 'idle';
-      }
-    }
-    return moving ? 'run' : 'idle';
-  }
-
-  private safePlay(name: string) {
-    const target = this.hasClip(name) ? name : (this.hasClip('Animation') ? 'Animation' : name);
-    if (this.sa) {
-      try {
-        (this.sa as any).play(target);
-      } catch {
-        try { (this.sa as any).playDefaultClip(); } catch {}
-      }
-      return;
-    }
-    try { this.anim?.play(target); } catch {}
-  }
-
-  private hasClip(name: string): boolean {
-    if (this.sa && (this.sa.clips as any as AnimationClip[])) {
-      const arr = this.sa.clips as any as AnimationClip[];
-      return arr.some(c => (c as any).name === name);
-    }
-    return false;
-  }
 
   private isInHarvestArea(): boolean {
+    /**
+     * 采集范围判定：
+     * - 遍历场景中启用且激活的 `ResourceNode` 与 `CollectItem`；
+     * - 用玩家与目标在 XZ 平面的距离，与各自半径比较；
+     * - 任一命中即视为在采集范围，用于触发工具动作。
+     */
     const s = this.node.scene;
     if (!s) return false;
     const p = this.node.worldPosition;
@@ -216,7 +234,9 @@ export class PlayerController extends Component {
   tryAddBreadItem(item: Node) {
     if (!this.canCarryBread(1)) return false;
     const ci = item.getComponent(CollectItem);
-    if (ci) { ci.enabled = false; ci.destroy(); }
+    if (ci) { 
+      ci.enabled = false; ci.destroy();
+     }
     if (this.breadStack) {
       const ok = this.breadStack.tryAddItem(item);
       if (ok) this.breads += 1;
@@ -239,7 +259,9 @@ export class PlayerController extends Component {
   tryAddCoinItem(item: Node) {
     if (!this.canCarryCoin(1)) return false;
     const ci = item.getComponent(CollectItem);
-    if (ci) { ci.enabled = false; ci.destroy(); }
+    if (ci) { 
+      ci.enabled = false; ci.destroy();
+     }
     if (this.coinStack) {
       const ok = this.coinStack.tryAddItem(item);
       if (ok) this.coins += 1;
@@ -255,5 +277,38 @@ export class PlayerController extends Component {
     this.coins -= d;
     return d;
   }
+
+  private updateToolVisibility(inHarvest: boolean) {
+    if (!this.autoToolVisibility) return;
+    const show = inHarvest && this.toolLevel > 0;
+    const t1 = this.toolScissors;
+    const t2 = this.toolMower;
+    const t3 = this.toolVacuum;
+    if (t1) 
+      t1.active = false;
+    if (t2) 
+      t2.active = false;
+    if (t3) 
+      t3.active = false;
+    if (!show) return;
+    if (this.toolLevel === 1) 
+      { 
+        if (t1) t1.active = true; 
+      }
+    else if (this.toolLevel === 2) 
+      { 
+        if (t2) t2.active = true; 
+      }
+    else if (this.toolLevel === 3) 
+      { 
+        if (t3) t3.active = true; 
+      }
+  }
+
+  public setToolLevel(level: number) {
+    this.toolLevel = Math.max(0, Math.min(3, level | 0));
+  }
 }
+  
+ 
   

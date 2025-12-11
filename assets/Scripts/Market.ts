@@ -64,9 +64,10 @@ export class Market extends Component {
       this.accCoinPickup += dt;
       if (this.accCoinPickup >= 1 / this.coinPickupRate) {
         this.accCoinPickup = 0;
-        const item = this.coinPlaced[0];
+        const idx = this.coinPlaced.length - 1;
+        const item = idx >= 0 ? this.coinPlaced[idx] : null;//倒序，视觉上从堆最上方开始拾取
         if (item && p.tryAddCoinItem(item)) {
-          this.coinPlaced.shift();
+          this.coinPlaced.pop();
         }
       }
     }

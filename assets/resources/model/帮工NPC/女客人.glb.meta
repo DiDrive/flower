@@ -98,13 +98,133 @@
       "uuid": "40c5800c-a5c3-4a0d-bbf4-0bb0fc000131@63e6e",
       "displayName": "",
       "id": "63e6e",
-      "name": "Animation.animation",
+      "name": "idle.animation",
       "userData": {
         "gltfIndex": 0,
         "wrapMode": 2,
         "sample": 30,
         "span": {
           "from": 0,
+          "to": 0.8
+        },
+        "events": []
+      },
+      "ver": "1.0.17",
+      "imported": true,
+      "files": [
+        ".cconb"
+      ],
+      "subMetas": {}
+    },
+    "4e7c9": {
+      "importer": "gltf-animation",
+      "uuid": "40c5800c-a5c3-4a0d-bbf4-0bb0fc000131@4e7c9",
+      "displayName": "",
+      "id": "4e7c9",
+      "name": "carry_move.animation",
+      "userData": {
+        "gltfIndex": 0,
+        "wrapMode": 2,
+        "speed": 1,
+        "sample": 30,
+        "span": {
+          "from": 1.6,
+          "to": 2.4
+        },
+        "events": []
+      },
+      "ver": "1.0.17",
+      "imported": true,
+      "files": [
+        ".cconb"
+      ],
+      "subMetas": {}
+    },
+    "24c9f": {
+      "importer": "gltf-animation",
+      "uuid": "40c5800c-a5c3-4a0d-bbf4-0bb0fc000131@24c9f",
+      "displayName": "",
+      "id": "24c9f",
+      "name": "move.animation",
+      "userData": {
+        "gltfIndex": 0,
+        "wrapMode": 2,
+        "speed": 1,
+        "sample": 30,
+        "span": {
+          "from": 0.9333333333333333,
+          "to": 1.6
+        },
+        "events": []
+      },
+      "ver": "1.0.17",
+      "imported": true,
+      "files": [
+        ".cconb"
+      ],
+      "subMetas": {}
+    },
+    "f17e9": {
+      "importer": "gltf-animation",
+      "uuid": "40c5800c-a5c3-4a0d-bbf4-0bb0fc000131@f17e9",
+      "displayName": "",
+      "id": "f17e9",
+      "name": "knead.animation",
+      "userData": {
+        "gltfIndex": 0,
+        "wrapMode": 2,
+        "speed": 1,
+        "sample": 30,
+        "span": {
+          "from": 3.3666666666666667,
+          "to": 4.2
+        },
+        "events": []
+      },
+      "ver": "1.0.17",
+      "imported": true,
+      "files": [
+        ".cconb"
+      ],
+      "subMetas": {}
+    },
+    "5c1f6": {
+      "importer": "gltf-animation",
+      "uuid": "40c5800c-a5c3-4a0d-bbf4-0bb0fc000131@5c1f6",
+      "displayName": "",
+      "id": "5c1f6",
+      "name": "shouyin.animation",
+      "userData": {
+        "gltfIndex": 0,
+        "wrapMode": 2,
+        "speed": 1,
+        "sample": 30,
+        "span": {
+          "from": 4.3,
+          "to": 5.1
+        },
+        "events": []
+      },
+      "ver": "1.0.17",
+      "imported": true,
+      "files": [
+        ".cconb"
+      ],
+      "subMetas": {}
+    },
+    "14cd4": {
+      "importer": "gltf-animation",
+      "uuid": "40c5800c-a5c3-4a0d-bbf4-0bb0fc000131@14cd4",
+      "displayName": "",
+      "id": "14cd4",
+      "name": "clipper_move.animation",
+      "userData": {
+        "gltfIndex": 0,
+        "wrapMode": 2,
+        "speed": 1,
+        "sample": 30,
+        "span": {
+          "from": 5.233333333333333,
           "to": 5.766666889190674
         },
         "events": []
@@ -208,11 +328,51 @@
         "fps": 30,
         "splits": [
           {
-            "name": "Animation",
+            "name": "idle",
             "from": 0,
-            "to": 5.766666889190674,
+            "to": 0.8,
             "wrapMode": 2,
             "previousId": "63e6e"
+          },
+          {
+            "name": "carry_move",
+            "from": 1.6,
+            "to": 2.4,
+            "wrapMode": 2,
+            "speed": 1,
+            "previousId": "4e7c9"
+          },
+          {
+            "name": "move",
+            "from": 0.9333333333333333,
+            "to": 1.6,
+            "wrapMode": 2,
+            "speed": 1,
+            "previousId": "24c9f"
+          },
+          {
+            "name": "knead",
+            "from": 3.3666666666666667,
+            "to": 4.2,
+            "wrapMode": 2,
+            "speed": 1,
+            "previousId": "f17e9"
+          },
+          {
+            "name": "shouyin",
+            "from": 4.3,
+            "to": 5.1,
+            "wrapMode": 2,
+            "speed": 1,
+            "previousId": "5c1f6"
+          },
+          {
+            "name": "clipper_move",
+            "from": 5.233333333333333,
+            "to": 5.766666889190674,
+            "wrapMode": 2,
+            "speed": 1,
+            "previousId": "14cd4"
           }
         ]
       }
