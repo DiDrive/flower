@@ -1,0 +1,187 @@
+{
+  "ver": "2.3.12",
+  "importer": "fbx",
+  "imported": true,
+  "uuid": "79fe0385-98a7-4b78-bbc9-897d28bd1ce1",
+  "files": [],
+  "subMetas": {
+    "e3cc7": {
+      "importer": "gltf-mesh",
+      "uuid": "79fe0385-98a7-4b78-bbc9-897d28bd1ce1@e3cc7",
+      "displayName": "",
+      "id": "e3cc7",
+      "name": "面团1.mesh",
+      "userData": {
+        "gltfIndex": 0,
+        "triangleCount": 410
+      },
+      "ver": "1.1.1",
+      "imported": true,
+      "files": [
+        ".bin",
+        ".json"
+      ],
+      "subMetas": {}
+    },
+    "c7651": {
+      "importer": "gltf-material",
+      "uuid": "79fe0385-98a7-4b78-bbc9-897d28bd1ce1@c7651",
+      "displayName": "",
+      "id": "c7651",
+      "name": "3d66Model-23811211-files-001_Mat.material",
+      "userData": {
+        "gltfIndex": 0
+      },
+      "ver": "1.0.14",
+      "imported": true,
+      "files": [
+        ".json"
+      ],
+      "subMetas": {}
+    },
+    "5eda1": {
+      "importer": "gltf-scene",
+      "uuid": "79fe0385-98a7-4b78-bbc9-897d28bd1ce1@5eda1",
+      "displayName": "",
+      "id": "5eda1",
+      "name": "面团.prefab",
+      "userData": {
+        "gltfIndex": 0
+      },
+      "ver": "1.0.14",
+      "imported": true,
+      "files": [
+        ".json"
+      ],
+      "subMetas": {}
+    }
+  },
+  "userData": {
+    "imageMetas": [],
+    "fbx": {
+      "smartMaterialEnabled": true
+    },
+    "redirect": "79fe0385-98a7-4b78-bbc9-897d28bd1ce1@5eda1",
+    "lods": {
+      "enable": false,
+      "hasBuiltinLOD": false,
+      "options": [
+        {
+          "screenRatio": 0.25,
+          "faceCount": 1
+        },
+        {
+          "screenRatio": 0.125,
+          "faceCount": 0.25
+        },
+        {
+          "screenRatio": 0.01,
+          "faceCount": 0.1
+        }
+      ]
+    },
+    "assetFinder": {
+      "meshes": [
+        "79fe0385-98a7-4b78-bbc9-897d28bd1ce1@e3cc7"
+      ],
+      "skeletons": [],
+      "textures": [],
+      "materials": [
+        "79fe0385-98a7-4b78-bbc9-897d28bd1ce1@c7651"
+      ],
+      "scenes": [
+        "79fe0385-98a7-4b78-bbc9-897d28bd1ce1@5eda1"
+      ]
+    },
+    "materials": {
+      "79fe0385-98a7-4b78-bbc9-897d28bd1ce1@c7651": {
+        "__type__": "cc.Material",
+        "_name": "",
+        "_objFlags": 0,
+        "__editorExtras__": {},
+        "_native": "",
+        "_effectAsset": {
+          "__uuid__": "f648964e-8d32-41fc-9ac9-7a1e714dd17b",
+          "__expectedType__": "cc.EffectAsset"
+        },
+        "_techIdx": 0,
+        "_defines": [
+          {
+            "DCC_APP_NAME": 2,
+            "USE_ALBEDO_MAP": true
+          },
+          {},
+          {},
+          {}
+        ],
+        "_states": [
+          {
+            "rasterizerState": {},
+            "depthStencilState": {},
+            "blendState": {
+              "targets": [
+                {}
+              ]
+            }
+          },
+          {
+            "rasterizerState": {},
+            "depthStencilState": {},
+            "blendState": {
+              "targets": [
+                {}
+              ]
+            }
+          },
+          {
+            "rasterizerState": {},
+            "depthStencilState": {},
+            "blendState": {
+              "targets": [
+                {}
+              ]
+            }
+          },
+          {
+            "rasterizerState": {},
+            "depthStencilState": {},
+            "blendState": {
+              "targets": [
+                {}
+              ]
+            }
+          }
+        ],
+        "_props": [
+          {
+            "mainTexture": {
+              "__uuid__": "f12364de-82ed-4b6d-9ad8-db3843c83c9c@6c48a",
+              "__expectedType__": "cc.Texture2D"
+            },
+            "mainColor": {
+              "__type__": "cc.Color",
+              "r": 231,
+              "g": 231,
+              "b": 231,
+              "a": 255
+            },
+            "emissive": {
+              "__type__": "cc.Color",
+              "r": 255,
+              "g": 255,
+              "b": 255,
+              "a": 255
+            },
+            "emissiveScale": 0,
+            "shininessExponent": 3.999999523162856,
+            "specularFactor": 0.25,
+            "transparencyFactor": 0
+          },
+          {},
+          {},
+          {}
+        ]
+      }
+    }
+  }
+}
