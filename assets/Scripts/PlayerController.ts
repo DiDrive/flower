@@ -1,4 +1,4 @@
-import { _decorator, Component, Node, Vec3, tween, Animation, Vec2, Camera, Quat, SkeletalAnimation } from 'cc';
+import { _decorator, Component, Node, Vec3, tween, Animation, Vec2, Camera, Quat, SkeletalAnimation, RigidBody, CapsuleCollider } from 'cc';
 import { ResourceNode } from './ResourceNode';
 import { Joystick } from './Joystick';
 import { CollectStack } from './CollectStack';
@@ -54,6 +54,7 @@ export class PlayerController extends Component {
   @property({ type: Node, tooltip: '割草机道具父节点（等级2）' }) toolMower: Node | null = null;
   @property({ type: Node, tooltip: '三级机器/吸尘器节点（等级3）' }) toolVacuum: Node | null = null;
   @property({ tooltip: '到采集范围内自动显示对应道具' }) autoToolVisibility: boolean = true;
+  @property({ tooltip: '使用物理刚体速度驱动移动' }) physicsDrive: boolean = true;
 
   flowers = 0;
   breads = 0;
@@ -61,9 +62,24 @@ export class PlayerController extends Component {
   private target: Vec3 | null = null;
 
   private sa: SkeletalAnimation | null = null;
+  private rb: RigidBody | null = null;
+  private capsule: CapsuleCollider | null = null;
   onLoad() {
     const sa = this.node.getComponent(SkeletalAnimation) || this.node.getComponentInChildren(SkeletalAnimation);
     this.sa = sa || null;
+    this.rb = this.node.getComponent(RigidBody) || this.node.getComponentInChildren(RigidBody);
+    this.capsule = this.node.getComponent(CapsuleCollider) || this.node.getComponentInChildren(CapsuleCollider);
+    if (this.rb) {
+      this.rb.useGravity = false;
+      this.rb.angularFactor = new Vec3(0, 0, 0);
+      this.rb.linearFactor = this.useXZ ? new Vec3(1, 0, 1) : new Vec3(1, 1, 1);
+      this.rb.angularDamping = 1;
+      this.rb.linearDamping = 0.05;
+      (this.rb as any).allowSleep = false;
+    }
+    if (this.capsule) {
+      this.capsule.isTrigger = false;
+    }
     if (!this.anim) {
       const a = this.node.getComponent(Animation) || this.node.getComponentInChildren(Animation);
       if (a) this.anim = a;
@@ -135,23 +151,34 @@ export class PlayerController extends Component {
     const inHarvest = inHarvestRaw || this.harvestHold > 0;// 采集范围内或收割维持时间内
     this.updateToolVisibility(inHarvest);
     if (len < this.moveDeadZone) {
+      if (this.physicsDrive && this.rb) { this.rb.setLinearVelocity(new Vec3(0, 0, 0)); (this.rb as any).wakeUp?.(); }
       const next = this.machine?.decide(0, this.breads, this.toolLevel, inHarvest) ?? 'idle';
       this.machine?.play(next);
       return;
     }
     const v = this.flowers + this.breads > 0 ? this.speed * 0.8 : this.speed;
     if (this.useXZ) {
-      const nx = cur.x + stick.x * v * dt;
-      const nz = cur.z - stick.y * v * dt;
-      this.node.setWorldPosition(nx, cur.y, nz);
       const yaw = Math.atan2(stick.x, -stick.y) * 180 / Math.PI;
       const q = new Quat();
       Quat.fromEuler(q, 0, yaw, 0);
       this.node.setWorldRotation(q);
+      if (this.physicsDrive && this.rb) {
+        this.rb.setLinearVelocity(new Vec3(stick.x * v, 0, -stick.y * v));
+        (this.rb as any).wakeUp?.();
+      } else {
+        const nx = cur.x + stick.x * v * dt;
+        const nz = cur.z - stick.y * v * dt;
+        this.node.setWorldPosition(nx, cur.y, nz);
+      }
     } else {
-      const nx = cur.x + stick.x * v * dt;
-      const ny = cur.y + stick.y * v * dt;
-      this.node.setWorldPosition(nx, ny, cur.z);
+      if (this.physicsDrive && this.rb) {
+        this.rb.setLinearVelocity(new Vec3(stick.x * v, stick.y * v, 0));
+        (this.rb as any).wakeUp?.();
+      } else {
+        const nx = cur.x + stick.x * v * dt;
+        const ny = cur.y + stick.y * v * dt;
+        this.node.setWorldPosition(nx, ny, cur.z);
+      }
     }
     const next = this.machine?.decide(len, this.breads, this.toolLevel, inHarvest) ?? 'run';
     this.machine?.play(next);

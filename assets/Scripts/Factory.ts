@@ -100,9 +100,10 @@ export class Factory extends Component {
         this.accPickup += dt;
         if (this.accPickup >= 1 / this.pickupRate) {
           this.accPickup = 0;
-          const item = this.placed[0];
+          const idx = this.placed.length - 1;
+          const item = idx >= 0 ? this.placed[idx] : null;
           if (item && p.tryAddBreadItem(item)) {
-            this.placed.shift();
+            this.placed.pop();
           }
         }
       }
