@@ -1,4 +1,4 @@
-import { _decorator, Component, Node, Vec3, Prefab, instantiate } from 'cc';
+import { _decorator, Component, Node, Prefab, instantiate, Collider, ITriggerEvent, BoxCollider, Vec3, Vec4, MeshRenderer, SkinnedMeshRenderer, Color, Mat4 } from 'cc';
 import { ProductState } from './ProductState';
 import { PlayerController } from './PlayerController';
 const { ccclass, property } = _decorator;
@@ -12,7 +12,6 @@ const { ccclass, property } = _decorator;
  */
 @ccclass('Factory')
 export class Factory extends Component {
-  @property({ min: 0.1, tooltip: '玩家靠近判定半径（XZ）' }) radius: number = 60;
   @property({ min: 0.1, tooltip: '花朵转入队列速率（次/秒）' }) inputRate: number = 3;
   @property({ min: 0.1, tooltip: '面包产出速率（个/秒）' }) produceRate: number = 2;
   @property({ min: 0, tooltip: '生产队列最大容量' }) queueMax: number = 10;
@@ -24,9 +23,11 @@ export class Factory extends Component {
   @property({ min: 0, tooltip: '行间距（Y）' }) placedRowSpacing: number = 20;
   @property({ min: 0, tooltip: '起始高度（Y）' }) placedBaseY: number = 0;
   @property({ min: 0, tooltip: '前方偏移量（Z负）' }) placedOffsetZ: number = 40;
-  @property({ min: 0.1, tooltip: '面包拾取区域半径（XZ）' }) pickupRadius: number = 60;
   @property({ min: 0.1, tooltip: '面包拾取速率（个/秒）' }) pickupRate: number = 3;
   @property({ min: 0, tooltip: '测试：半成品转成品的延时（秒）' }) finalizeDelaySec: number = 0;
+  @property({ type: Node, tooltip: '上传区域触发器节点' }) uploadArea: Node | null = null;
+  @property({ type: Node, tooltip: '拾取区域触发器节点' }) pickupArea: Node | null = null;
+  @property({ tooltip: '进入区域高亮颜色' }) enterColor: Color = new Color(255, 216, 51, 255);
 
   private accIn = 0;
   private accOut = 0;
@@ -34,11 +35,19 @@ export class Factory extends Component {
   private accPickup = 0;
   private placed: Node[] = [];
   private finalizePend: { n: Node; t: number }[] = [];
+  private uploadHit = false;
+  private pickupHit = false;
+  private areas: { node: Node; col: Collider; setter: (v: boolean) => void; renders: { r: MeshRenderer | SkinnedMeshRenderer; orig: any[]; colors: any[] }[]; inside: boolean }[] = [];
 
   /**
    * 主循环：
    * 1) 取入花朵进入生产队列；2) 队列出面包并摆放；3) 玩家近距离拾取面包。
    */
+  onLoad() {
+    this.bindAreaTrigger(this.uploadArea, (v) => { this.uploadHit = v; });
+    this.bindAreaTrigger(this.pickupArea, (v) => { this.pickupHit = v; });
+  }
+
   update(dt: number) {
     if (this.finalizeDelaySec > 0) {
       for (let i = this.finalizePend.length - 1; i >= 0; i--) {
@@ -59,8 +68,7 @@ export class Factory extends Component {
     }
     const p = this.findPlayer();
     if (p) {
-      const d = this.distanceTo(p.node.worldPosition);
-      if (d <= this.radius) {
+      if (this.uploadHit) {
         this.accIn += dt;
         if (this.accIn >= 1 / this.inputRate) {
           this.accIn = 0;
@@ -95,8 +103,16 @@ export class Factory extends Component {
     }
 
     if (p) {
-      const d2 = this.distanceTo(p.node.worldPosition);
-      if (d2 <= this.pickupRadius) {
+      for (const it of this.areas) {
+        const inside = this.isInsideAreaXZ(p.node.worldPosition, it.node, it.col);
+        it.setter(inside);
+        if (inside !== it.inside) {
+          it.inside = inside;
+          if (inside) this.applyAreaColor(it, this.enterColor);
+          else this.restoreAreaColor(it);
+        }
+      }
+      if (this.pickupHit) {
         this.accPickup += dt;
         if (this.accPickup >= 1 / this.pickupRate) {
           this.accPickup = 0;
@@ -118,9 +134,142 @@ export class Factory extends Component {
     return list.length > 0 ? list[0] : null;
   }
 
-  /** 计算当前工厂到某世界位置的 XZ 平面距离。 */
-  private distanceTo(pos: Vec3): number {
-    const a = this.node.worldPosition;
-    return Math.hypot(a.x - pos.x, a.z - pos.z);
+  /** 助手投递花朵到生产队列，返回成功投递数量 */
+  acceptFlower(n: number): number {
+    const room = this.queueMax - this.queue
+    const moved = Math.max(0, Math.min(n, room))
+    this.queue += moved
+    return moved
   }
+
+  /** 助手从摆放区拿取若干面包，返回拿到的节点列表 */
+  takeBread(count: number): Node[] {
+    const out: Node[] = []
+    for (let i = 0; i < count; i++) {
+      const idx = this.placed.length - 1
+      const item = idx >= 0 ? this.placed[idx] : null
+      if (!item) break
+      out.push(item)
+      this.placed.pop()
+    }
+    return out
+  }
+
+  
+
+  private bindAreaTrigger(node: Node | null, setter: (v: boolean) => void) {
+    if (!node) return;
+    const col = node.getComponent(Collider) || node.getComponentInChildren(Collider);
+    if (!col) return;
+    //col.isTrigger = true;
+    console.log('[Factory] bindAreaTrigger', node.name, 'isTrigger=', col.isTrigger);
+    col.on('onTriggerEnter', (e: ITriggerEvent) => {
+      console.log('[Factory] trigger enter', e.otherCollider?.node?.name);
+      if (this.isPlayerCollider(e.otherCollider)) setter(true);
+    }, this);
+    col.on('onTriggerStay', (e: ITriggerEvent) => {
+      if (this.isPlayerCollider(e.otherCollider)) setter(true);
+    }, this);
+    col.on('onTriggerExit', (e: ITriggerEvent) => {
+      console.log('[Factory] trigger exit', e.otherCollider?.node?.name);
+      if (this.isPlayerCollider(e.otherCollider)) setter(false);
+    }, this);
+    col.on('onCollisionEnter', (e: any) => {
+      console.log('[Factory] collision enter', (e?.otherCollider as any)?.node?.name);
+    }, this);
+    col.on('onCollisionStay', (e: any) => {
+      console.log('[Factory] collision stay', (e?.otherCollider as any)?.node?.name);
+    }, this);
+    col.on('onCollisionExit', (e: any) => {
+      console.log('[Factory] collision exit', (e?.otherCollider as any)?.node?.name);
+    }, this);
+    const mrs = node.getComponentsInChildren(MeshRenderer);
+    const srs = node.getComponentsInChildren(SkinnedMeshRenderer);
+    const renders: { r: MeshRenderer | SkinnedMeshRenderer; orig: any[]; colors: any[] }[] = [];
+    for (const r of mrs) {
+      const count = (r.materials?.length) ?? 1;
+      const origArr: any[] = [];
+      const colors: any[] = [];
+      for (let i = 0; i < count; i++) {
+        const sm = r.getSharedMaterial(i) ?? r.materials?.[i] ?? null as any;
+        origArr.push(sm);
+        let c: any = null;
+        try {
+          const m = r.getSharedMaterial(i);
+          c = ((m as any).getProperty?.('mainColor')) ?? null;
+        } catch {}
+        colors.push(c);
+      }
+      renders.push({ r, orig: origArr, colors });
+    }
+    for (const r of srs) {
+      const count = (r.materials?.length) ?? 1;
+      const origArr: any[] = [];
+      const colors: any[] = [];
+      for (let i = 0; i < count; i++) {
+        const sm = r.getSharedMaterial(i) ?? r.materials?.[i] ?? null as any;
+        origArr.push(sm);
+        let c: any = null;
+        try {
+          const m = r.getSharedMaterial(i);
+          c = ((m as any).getProperty?.('mainColor')) ?? null;
+        } catch {}
+        colors.push(c);
+      }
+      renders.push({ r, orig: origArr, colors });
+    }
+    this.areas.push({ node, col, setter, renders, inside: false });
+  }
+
+  private isPlayerCollider(other: Collider | null): boolean {
+    if (!other) return false;
+    let n: Node | null = other.node;
+    while (n) {
+      if (n.getComponent(PlayerController)) return true;
+      n = n.parent;
+    }
+    return false;
+  }
+
+  private isInsideAreaXZ(p: Vec3, areaNode: Node, col: Collider): boolean {
+    const bc = col instanceof BoxCollider ? col : null;
+    if (!bc) return false;
+    const inv = new Mat4();
+    Mat4.invert(inv, areaNode.worldMatrix);
+    const lp = new Vec3();
+    Vec3.transformMat4(lp, p, inv);
+    const dx = lp.x - bc.center.x;
+    const dz = lp.z - bc.center.z;
+    const hx = bc.size.x * 0.5;
+    const hz = bc.size.z * 0.5;
+    return Math.abs(dx) <= hx && Math.abs(dz) <= hz;
+  }
+
+  
+
+  
+
+  private applyAreaColor(it: { renders: { r: MeshRenderer | SkinnedMeshRenderer; colors: any[] }[] }, color: Color) {
+    for (const ent of it.renders) {
+      const r = ent.r;
+      const count = ent.colors.length;
+      for (let i = 0; i < count; i++) {
+        const m = (r as any).getMaterialInstance?.(i) || r.getSharedMaterial(i);
+        try { (m as any).setProperty?.('mainColor', color); } catch {}
+      }
+    }
+  }
+
+  private restoreAreaColor(it: { renders: { r: MeshRenderer | SkinnedMeshRenderer; orig: any[]; colors: any[] }[] }) {
+    for (const ent of it.renders) {
+      const r = ent.r;
+      const count = ent.colors.length;
+      for (let i = 0; i < count; i++) {
+        const orig = ent.orig[i];
+        if (orig) r.setSharedMaterial(orig, i);
+      }
+    }
+  }
+
+  
 }

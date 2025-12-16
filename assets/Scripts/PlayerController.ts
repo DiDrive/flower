@@ -1,4 +1,5 @@
 import { _decorator, Component, Node, Vec3, tween, Animation, Vec2, Camera, Quat, SkeletalAnimation, RigidBody, CapsuleCollider } from 'cc';
+import { Economy } from './Economy';
 import { ResourceNode } from './ResourceNode';
 import { Joystick } from './Joystick';
 import { CollectStack } from './CollectStack';
@@ -292,6 +293,7 @@ export class PlayerController extends Component {
     if (this.coinStack) {
       const ok = this.coinStack.tryAddItem(item);
       if (ok) this.coins += 1;
+      if (ok) Economy.add(1);
       if (ok) this.handoffCooldown = this.handoffCooldownSec;
       return ok;
     }
@@ -302,6 +304,7 @@ export class PlayerController extends Component {
     let d = Math.min(n, this.coins);
     if (this.coinStack) d = this.coinStack.removeTop(d);
     this.coins -= d;
+    if (d > 0) Economy.spend(d);
     return d;
   }
 

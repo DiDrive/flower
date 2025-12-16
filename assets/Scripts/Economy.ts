@@ -20,6 +20,14 @@ class Economy {
     Economy.bus.emit('coins', Economy.coins);
     return true;
   }
+  /** 部分消耗：最多消耗 n 个并返回实际消耗数量 */
+  static spendUpTo(n: number): number {
+    const spent = Math.min(n, Economy.coins);
+    if (spent <= 0) return 0;
+    Economy.coins -= spent;
+    Economy.bus.emit('coins', Economy.coins);
+    return spent;
+  }
   /** 订阅金币变更事件 */
   static onCoins(cb: Function, target?: any) {
     Economy.bus.on('coins', cb as any, target);

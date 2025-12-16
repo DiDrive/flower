@@ -1,4 +1,4 @@
-import { _decorator, Component, Node, Vec3, Prefab, instantiate } from 'cc';
+import { _decorator, Component, Node, Prefab, instantiate, Collider, ITriggerEvent, BoxCollider, Vec3, Vec4, MeshRenderer, SkinnedMeshRenderer, Color, Mat4 } from 'cc';
 import { PlayerController } from './PlayerController';
 const { ccclass, property } = _decorator;
 
@@ -10,7 +10,6 @@ const { ccclass, property } = _decorator;
  */
 @ccclass('Market')
 export class Market extends Component {
-  @property({ min: 0.1, tooltip: '玩家靠近判定半径（XZ）' }) radius: number = 60;
   @property({ min: 0.1, tooltip: '售卖速率（个/秒）' }) sellRate: number = 3;
   @property({ min: 0, tooltip: '单次售卖生成的金币数量' }) price: number = 5;
   @property({ type: Prefab, tooltip: '金币预制体' }) coinPrefab: Prefab | null = null;
@@ -21,22 +20,59 @@ export class Market extends Component {
   @property({ min: 0, tooltip: '行间距（Y）' }) coinPlacedRowSpacing: number = 10;
   @property({ min: 0, tooltip: '起始高度（Y）' }) coinPlacedBaseY: number = 0;
   @property({ min: 0, tooltip: '前方偏移量（Z负）' }) coinPlacedOffsetZ: number = 40;
-  @property({ min: 0.1, tooltip: '金币拾取区域半径（XZ）' }) coinPickupRadius: number = 60;
   @property({ min: 0.1, tooltip: '金币拾取速率（个/秒）' }) coinPickupRate: number = 5;
+  @property({ type: Node, tooltip: '售卖区域触发器节点' }) sellArea: Node | null = null;
+  @property({ type: Node, tooltip: '拾取区域触发器节点' }) pickupArea: Node | null = null;
+  @property({ tooltip: '进入区域高亮颜色' }) enterColor: Color = new Color(255, 216, 51, 255);
 
   private acc = 0;
   private accCoinPickup = 0;
   private coinPlaced: Node[] = [];
+  private sellHit = false;
+  private pickupHit = false;
+  private areas: { node: Node; col: Collider; setter: (v: boolean) => void; renders: { r: MeshRenderer | SkinnedMeshRenderer; orig: any[]; colors: any[] }[]; inside: boolean }[] = [];
 
   /**
    * 主循环：
    * 1) 玩家近距离售卖面包并在摆放区生成金币；2) 玩家在金币拾取范围内将金币加入自身堆叠。
    */
+  onLoad() {
+    this.bindAreaTrigger(this.sellArea, (v) => { this.sellHit = v; });
+    this.bindAreaTrigger(this.pickupArea, (v) => { this.pickupHit = v; });
+  }
+
+  /** 助手售卖面包：按当前价格生成金币到摆放区 */
+  spawnCoinsFor(breads: number) {
+    if (!this.coinPrefab || !this.coinSpawnRoot) return
+    const total = breads * this.price
+    for (let i = 0; i < total; i++) {
+      if (this.coinPlaced.length >= this.coinPlacedMax) break
+      const n = instantiate(this.coinPrefab)
+      n.parent = this.coinSpawnRoot
+      const idx = this.coinPlaced.length
+      const col = idx % this.coinPlacedColumns
+      const row = Math.floor(idx / this.coinPlacedColumns)
+      const x = (col - (this.coinPlacedColumns - 1) * 0.5) * this.coinPlacedColSpacing
+      const y = this.coinPlacedBaseY + row * this.coinPlacedRowSpacing
+      const z = -this.coinPlacedOffsetZ
+      n.setPosition(x, y, z)
+      this.coinPlaced.push(n)
+    }
+  }
+
   update(dt: number) {
     const p = this.findPlayer();
     if (!p) return;
-    const d = this.distanceTo(p.node.worldPosition);
-    if (d <= this.radius) {
+    for (const it of this.areas) {
+      const inside = this.isInsideAreaXZ(p.node.worldPosition, it.node, it.col);
+      it.setter(inside);
+      if (inside !== it.inside) {
+        it.inside = inside;
+        if (inside) this.applyAreaColor(it, this.enterColor);
+        else this.restoreAreaColor(it);
+      }
+    }
+    if (this.sellHit) {
       this.acc += dt;
       if (this.acc >= 1 / this.sellRate) {
         this.acc = 0;
@@ -59,8 +95,7 @@ export class Market extends Component {
       }
     }
 
-    const d2 = this.distanceTo(p.node.worldPosition);
-    if (d2 <= this.coinPickupRadius) {
+    if (this.pickupHit) {
       this.accCoinPickup += dt;
       if (this.accCoinPickup >= 1 / this.coinPickupRate) {
         this.accCoinPickup = 0;
@@ -81,9 +116,121 @@ export class Market extends Component {
     return list.length > 0 ? list[0] : null;
   }
 
-  /** 计算当前市场到某世界位置的 XZ 平面距离。 */
-  private distanceTo(pos: Vec3): number {
-    const a = this.node.worldPosition;
-    return Math.hypot(a.x - pos.x, a.z - pos.z);
+  
+
+  private bindAreaTrigger(node: Node | null, setter: (v: boolean) => void) {
+    if (!node) return;
+    const col = node.getComponent(Collider) || node.getComponentInChildren(Collider);
+    if (!col) return;
+    console.log('[Market] bindAreaTrigger', node.name, 'isTrigger=', col.isTrigger);
+    col.on('onTriggerEnter', (e: ITriggerEvent) => {
+      console.log('[Market] trigger enter', e.otherCollider?.node?.name);
+      if (this.isPlayerCollider(e.otherCollider)) setter(true);
+    }, this);
+    col.on('onTriggerStay', (e: ITriggerEvent) => {
+      if (this.isPlayerCollider(e.otherCollider)) setter(true);
+    }, this);
+    col.on('onTriggerExit', (e: ITriggerEvent) => {
+      console.log('[Market] trigger exit', e.otherCollider?.node?.name);
+      if (this.isPlayerCollider(e.otherCollider)) setter(false);
+    }, this);
+    col.on('onCollisionEnter', (e: any) => {
+      console.log('[Market] collision enter', (e?.otherCollider as any)?.node?.name);
+    }, this);
+    col.on('onCollisionStay', (e: any) => {
+      console.log('[Market] collision stay', (e?.otherCollider as any)?.node?.name);
+    }, this);
+    col.on('onCollisionExit', (e: any) => {
+      console.log('[Market] collision exit', (e?.otherCollider as any)?.node?.name);
+    }, this);
+    const mrs = node.getComponentsInChildren(MeshRenderer);
+    const srs = node.getComponentsInChildren(SkinnedMeshRenderer);
+    const renders: { r: MeshRenderer | SkinnedMeshRenderer; orig: any[]; colors: any[] }[] = [];
+    for (const r of mrs) {
+      const count = (r.materials?.length) ?? 1;
+      const origArr: any[] = [];
+      const colors: any[] = [];
+      for (let i = 0; i < count; i++) {
+        const sm = r.getSharedMaterial(i) ?? r.materials?.[i] ?? null as any;
+        origArr.push(sm);
+        let c: any = null;
+        try {
+          const m = r.getSharedMaterial(i);
+          c = ((m as any).getProperty?.('mainColor')) ?? null;
+        } catch {}
+        colors.push(c);
+      }
+      renders.push({ r, orig: origArr, colors });
+    }
+    for (const r of srs) {
+      const count = (r.materials?.length) ?? 1;
+      const origArr: any[] = [];
+      const colors: any[] = [];
+      for (let i = 0; i < count; i++) {
+        const sm = r.getSharedMaterial(i) ?? r.materials?.[i] ?? null as any;
+        origArr.push(sm);
+        let c: any = null;
+        try {
+          const m = r.getSharedMaterial(i);
+          c = ((m as any).getProperty?.('mainColor')) ?? null;
+        } catch {}
+        colors.push(c);
+      }
+      renders.push({ r, orig: origArr, colors });
+    }
+    this.areas.push({ node, col, setter, renders, inside: false });
+  }
+
+  private isPlayerCollider(other: Collider | null): boolean {
+    if (!other) return false;
+    let n: Node | null = other.node;
+    while (n) {
+      if (n.getComponent(PlayerController)) return true;
+      n = n.parent;
+    }
+    return false;
+  }
+
+  
+
+  
+
+  private applyAreaColor(it: { renders: { r: MeshRenderer | SkinnedMeshRenderer; colors: any[] }[] }, color: Color) {
+    for (const ent of it.renders) {
+      const r = ent.r;
+      const count = ent.colors.length;
+      for (let i = 0; i < count; i++) {
+        const m = (r as any).getMaterialInstance?.(i) || r.getSharedMaterial(i);
+        try { (m as any).setProperty?.('mainColor', color); } catch {}
+      }
+    }
+  }
+
+  private restoreAreaColor(it: { renders: { r: MeshRenderer | SkinnedMeshRenderer; orig: any[]; colors: any[] }[] }) {
+    for (const ent of it.renders) {
+      const r = ent.r;
+      const count = ent.colors.length;
+      for (let i = 0; i < count; i++) {
+        const orig = ent.orig[i];
+        if (orig) r.setSharedMaterial(orig, i);
+      }
+    }
+  }
+
+  
+
+  /** 判断点是否在 XZ 平面内的 AABB 区域内。 */ 
+  private isInsideAreaXZ(p: Vec3, areaNode: Node, col: Collider): boolean {
+    const bc = col instanceof BoxCollider ? col : null;
+    if (!bc) return false;
+    const inv = new Mat4();
+    Mat4.invert(inv, areaNode.worldMatrix);
+    const lp = new Vec3();
+    Vec3.transformMat4(lp, p, inv);
+    const dx = lp.x - bc.center.x;
+    const dz = lp.z - bc.center.z;
+    const hx = bc.size.x * 0.5;
+    const hz = bc.size.z * 0.5;
+    return Math.abs(dx) <= hx && Math.abs(dz) <= hz;
   }
 }
