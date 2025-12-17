@@ -73,30 +73,43 @@ export class ActionStateMachine {
   play(name: string): boolean {
     if (name === this.current) return true
     const logical = this.map[name] ?? name
-    const target = this.resolveName(logical) || this.fallbackName(name)
-    if (!target) return false
-    if (this.sa) {
-      try { (this.sa as any).play(target); this.current = name; return true } catch {}
-      return false
+    const saTarget = this.resolveInSa(logical)
+    if (saTarget) {
+      try { (this.sa as any)?.play(saTarget); this.current = name; return true } catch {}
     }
-    try { this.anim?.play(target); this.current = name; return true } catch { return false }
+    const animTarget = this.resolveInAnim(logical)
+    if (animTarget) {
+      try { this.anim?.play(animTarget); this.current = name; return true } catch {}
+    }
+    const fbBase = this.fallbackBase(name)
+    const fbSa = fbBase ? this.resolveInSa(fbBase) : null
+    const fbAnim = fbBase ? this.resolveInAnim(fbBase) : null
+    if (fbSa) {
+      try { (this.sa as any)?.play(fbSa); this.current = name; return true } catch {}
+    }
+    if (fbAnim) {
+      try { this.anim?.play(fbAnim); this.current = name; return true } catch {}
+    }
+    const def = this.defaultName()
+    if (!def) return false
+    if (this.sa) {
+      try { (this.sa as any).play(def); this.current = name; return true } catch {}
+    }
+    try { this.anim?.play(def); this.current = name; return true } catch { return false }
   }
 
   playAction(action: Action): boolean {
     return this.play(action)
   }
 
-  private fallbackName(name: string): string | null {
+  private fallbackBase(name: string): string | null {
     const base = name.endsWith('_run') ? 'run' : name.endsWith('_idle') ? 'idle' : null
-    if (base) {
-      const logical = this.map[base] ?? base
-      const r = this.resolveName(logical)
-      if (r) return r
-    }
-    return this.defaultName()
+    if (!base) return null
+    const logical = this.map[base] ?? base
+    return logical
   }
 
-  private resolveName(name: string): string | null {
+  private resolveInSa(name: string): string | null {
     if (this.sa && (this.sa.clips as any as AnimationClip[])) {
       const arr = this.sa.clips as any as AnimationClip[]
       for (const c of arr) {
@@ -112,8 +125,29 @@ export class ActionStateMachine {
     return null
   }
 
+  private resolveInAnim(name: string): string | null {
+    if (this.anim && (this.anim as any).clips) {
+      const arr = (this.anim as any).clips as AnimationClip[]
+      for (const c of arr) {
+        const n = (c as any).name as string
+        if (!n) continue
+        if (n === name || n === `${name}.animation`) return n
+        if (n.endsWith('.animation')) {
+          const base = n.substring(0, n.length - '.animation'.length)
+          if (base === name) return n
+        }
+      }
+    }
+    return null
+  }
+
   private defaultName(): string | null {
     if (this.sa?.defaultClip) return ((this.sa.defaultClip as any).name as string) || null
-    return 'Animation'
+    if ((this.anim as any)?.defaultClip) return (((this.anim as any).defaultClip as any)?.name as string) || null
+    if ((this.anim as any)?.clips && ((this.anim as any).clips as AnimationClip[]).length > 0) {
+      const c = ((this.anim as any).clips as AnimationClip[])[0]
+      return ((c as any).name as string) || null
+    }
+    return null
   }
 }

@@ -62,13 +62,85 @@
       "uuid": "c42712f6-5aee-483b-bc53-3d0c5c153f77@63e6e",
       "displayName": "",
       "id": "63e6e",
-      "name": "Animation.animation",
+      "name": "idle.animation",
       "userData": {
         "gltfIndex": 0,
         "wrapMode": 2,
         "sample": 30,
         "span": {
           "from": 0,
+          "to": 0.6666666666666666
+        },
+        "events": []
+      },
+      "ver": "1.0.17",
+      "imported": true,
+      "files": [
+        ".cconb"
+      ],
+      "subMetas": {}
+    },
+    "24c9f": {
+      "importer": "gltf-animation",
+      "uuid": "c42712f6-5aee-483b-bc53-3d0c5c153f77@24c9f",
+      "displayName": "",
+      "id": "24c9f",
+      "name": "move.animation",
+      "userData": {
+        "gltfIndex": 0,
+        "wrapMode": 2,
+        "speed": 1,
+        "sample": 30,
+        "span": {
+          "from": 0.7666666666666667,
+          "to": 1.4666666666666666
+        },
+        "events": []
+      },
+      "ver": "1.0.17",
+      "imported": true,
+      "files": [
+        ".cconb"
+      ],
+      "subMetas": {}
+    },
+    "4e7c9": {
+      "importer": "gltf-animation",
+      "uuid": "c42712f6-5aee-483b-bc53-3d0c5c153f77@4e7c9",
+      "displayName": "",
+      "id": "4e7c9",
+      "name": "carry_move.animation",
+      "userData": {
+        "gltfIndex": 0,
+        "wrapMode": 2,
+        "speed": 1,
+        "sample": 30,
+        "span": {
+          "from": 1.6,
+          "to": 2.2333333333333334
+        },
+        "events": []
+      },
+      "ver": "1.0.17",
+      "imported": true,
+      "files": [
+        ".cconb"
+      ],
+      "subMetas": {}
+    },
+    "f82cc": {
+      "importer": "gltf-animation",
+      "uuid": "c42712f6-5aee-483b-bc53-3d0c5c153f77@f82cc",
+      "displayName": "",
+      "id": "f82cc",
+      "name": "carry_idle.animation",
+      "userData": {
+        "gltfIndex": 0,
+        "wrapMode": 2,
+        "speed": 1,
+        "sample": 30,
+        "span": {
+          "from": 2.3,
           "to": 2.9666666984558105
         },
         "events": []
@@ -107,11 +179,35 @@
         "fps": 30,
         "splits": [
           {
-            "name": "Animation",
+            "name": "idle",
             "from": 0,
-            "to": 2.9666666984558105,
+            "to": 0.6666666666666666,
             "wrapMode": 2,
             "previousId": "63e6e"
+          },
+          {
+            "name": "move",
+            "from": 0.7666666666666667,
+            "to": 1.4666666666666666,
+            "wrapMode": 2,
+            "speed": 1,
+            "previousId": "24c9f"
+          },
+          {
+            "name": "carry_move",
+            "from": 1.6,
+            "to": 2.2333333333333334,
+            "wrapMode": 2,
+            "speed": 1,
+            "previousId": "4e7c9"
+          },
+          {
+            "name": "carry_idle",
+            "from": 2.3,
+            "to": 2.9666666984558105,
+            "wrapMode": 2,
+            "speed": 1,
+            "previousId": "f82cc"
           }
         ]
       }

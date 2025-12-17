@@ -1,4 +1,4 @@
-import { _decorator, Component, Node, Vec3, tween } from 'cc';
+import { _decorator, Component, Node, Vec3, tween, Mat4 } from 'cc';
 const { ccclass, property } = _decorator;
 
 /**
@@ -44,6 +44,12 @@ export class CollectStack extends Component {
     return true;
   }
 
+  popTopRaw(): Node | null {
+    const it = this.items.pop();
+    if (!it) return null;
+    return it;
+  }
+
   /**
    * 从顶部移除 n 个物品并销毁其节点，返回实际移除数量。
    */
@@ -56,5 +62,23 @@ export class CollectStack extends Component {
       it.destroy();
     }
     return moved;
+  }
+
+  /**
+   * 将顶部一个物品以动画飞向目标世界位置并销毁。
+   * 返回 true 表示存在物品并已触发动画。
+   */
+  popTopToWorld(parent: Node, targetWorld: Vec3, duration: number = 0.25) {
+    const it = this.items.pop();
+    if (!it) return false;
+    const start = it.worldPosition.clone();
+    it.parent = parent;
+    it.setWorldPosition(start);
+    const inv = new Mat4();
+    Mat4.invert(inv, parent.worldMatrix);
+    const lp = new Vec3();
+    Vec3.transformMat4(lp, targetWorld, inv);
+    tween(it).to(duration, { position: lp }).call(() => { it.destroy(); }).start();
+    return true;
   }
 }

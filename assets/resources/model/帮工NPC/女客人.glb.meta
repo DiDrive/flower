@@ -128,7 +128,7 @@
         "speed": 1,
         "sample": 30,
         "span": {
-          "from": 1.6,
+          "from": 1.7333333333333334,
           "to": 2.4
         },
         "events": []
@@ -226,6 +226,30 @@
         "span": {
           "from": 5.233333333333333,
           "to": 5.766666889190674
+        },
+        "events": []
+      },
+      "ver": "1.0.17",
+      "imported": true,
+      "files": [
+        ".cconb"
+      ],
+      "subMetas": {}
+    },
+    "f82cc": {
+      "importer": "gltf-animation",
+      "uuid": "40c5800c-a5c3-4a0d-bbf4-0bb0fc000131@f82cc",
+      "displayName": "",
+      "id": "f82cc",
+      "name": "carry_idle.animation",
+      "userData": {
+        "gltfIndex": 0,
+        "wrapMode": 2,
+        "speed": 1,
+        "sample": 30,
+        "span": {
+          "from": 2.466666666666667,
+          "to": 3.2666666666666666
         },
         "events": []
       },
@@ -336,7 +360,7 @@
           },
           {
             "name": "carry_move",
-            "from": 1.6,
+            "from": 1.7333333333333334,
             "to": 2.4,
             "wrapMode": 2,
             "speed": 1,
@@ -373,6 +397,14 @@
             "wrapMode": 2,
             "speed": 1,
             "previousId": "14cd4"
+          },
+          {
+            "name": "carry_idle",
+            "from": 2.466666666666667,
+            "to": 3.2666666666666666,
+            "wrapMode": 2,
+            "speed": 1,
+            "previousId": "f82cc"
           }
         ]
       }
