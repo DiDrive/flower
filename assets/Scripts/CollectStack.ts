@@ -1,4 +1,4 @@
-import { _decorator, Component, Node, Vec3, tween, Mat4 } from 'cc';
+import { _decorator, Component, Node, Vec3, tween, Mat4, Camera, UITransform, Canvas, view } from 'cc';
 const { ccclass, property } = _decorator;
 
 /**
@@ -16,13 +16,146 @@ export class CollectStack extends Component {
   @property({ min: 0, tooltip: '前方偏移量（Z负方向）' }) offsetZ: number = 40;
   @property({ min: 0, tooltip: '起始高度（Y）' }) baseY: number = 0;
   @property({ min: 1, tooltip: '堆叠容量上限' }) capacity: number = 10;
+  @property({ type: Node, tooltip: '满容量提示节点' }) maxIndicator: Node | null = null;
+  @property({ tooltip: '满容量提示跟随栈顶' }) maxIndicatorFollowTop: boolean = true;
+  @property({ min: 0, tooltip: '满容量提示顶部偏移Y' }) maxIndicatorOffsetY: number = 20;
+  @property({ min: 0, tooltip: '满容量提示水平偏移X' }) maxIndicatorOffsetX: number = 0;
+  @property({ type: Node, tooltip: 'UI画布根节点' }) uiCanvas: Node | null = null;
+  @property({ type: Node, tooltip: '世界摄像机节点' }) worldCameraNode: Node | null = null;
+  @property({ tooltip: '使用视图缩放换算UI坐标' }) indicatorUseViewScale: boolean = true;
+  @property({ min: 0, tooltip: 'MAX 出现/消失时向上偏移量Y' }) maxRiseY: number = 20;
+  @property({ min: 0.05, tooltip: 'MAX 出现时长' }) maxAppearSec: number = 0.4;
+  @property({ min: 0, tooltip: 'MAX 停顿时长' }) maxHoldSec: number = 0.2;
+  @property({ min: 0.05, tooltip: 'MAX 消失时长' }) maxVanishSec: number = 0.4;
+  @property({ min: 0, tooltip: 'MAX 循环间隔（循环模式）' }) maxCyclePauseSec: number = 0.2;
 
   private items: Node[] = [];
+  private maxTween: any = null;
+  private _maxHideCb: Function | null = null;
+  private maxLoopActive: boolean = false;
+  private maxPlaying: boolean = false;
+  private maxAnimY: number = 0;
+  private maxScale: number = 1;
 
   /** 当前堆叠中的物品数量 */
   count() {
     return this.items.length;
   }
+
+  setCapacity(n: number) {
+    const v = Math.max(1, n | 0);
+    this.capacity = v;
+    if (this.items.length >= this.capacity) {
+      this.pingMaxIndicator(0.8);
+    } else {
+      this.hideMaxIndicator();
+    }
+  }
+
+  private showMaxIndicator() {
+    const n = this.maxIndicator;
+    if (!n) return;
+    if (this.maxTween) { try { this.maxTween.stop(); } catch {} this.maxTween = null; }
+    n.active = true;
+    this.maxScale = 1;
+    this.maxTween = null;
+  }
+
+  private hideMaxIndicator() {
+    const n = this.maxIndicator;
+    if (!n) return;
+    if (this.maxTween) { try { this.maxTween.stop(); } catch {} this.maxTween = null; }
+    n.active = false;
+    if (this._maxHideCb) { try { this.unschedule(this._maxHideCb as any); } catch {} this._maxHideCb = null; }
+    this.maxAnimY = 0;
+    this.maxScale = 1;
+  }
+
+  private updateMaxIndicatorPosition() {
+    const n = this.maxIndicator;
+    if (!n) return;
+    const count = Math.max(0, this.items.length);
+    const rows = Math.max(1, Math.ceil(count / this.columns));
+    const yTop = (this.maxIndicatorFollowTop ? (this.baseY + rows * this.rowSpacing) : this.baseY) + this.maxIndicatorOffsetY + this.maxAnimY;
+    const z = -this.offsetZ;
+    const anchor = this.anchor ?? this.node;
+    if (!anchor) return;
+    const lp = new Vec3(this.maxIndicatorOffsetX, yTop, z);
+    const wp = new Vec3();
+    Vec3.transformMat4(wp, lp, anchor.worldMatrix);
+    const ui = this.uiCanvas ? this.uiCanvas.getComponent(UITransform) : null;
+    const cam = this.getWorldCamera();
+    if (ui && cam) {
+      const sp = cam.worldToScreen(wp);
+      if (this.indicatorUseViewScale) {
+        const vs = view.getVisibleSize();
+        const x = sp.x / view.getScaleX() - vs.width * 0.5;
+        const y = sp.y / view.getScaleY() - vs.height * 0.5;
+        n.setPosition(x, y, 0);
+      } else {
+        const pos = ui.convertToNodeSpaceAR(new Vec3(sp.x, sp.y, 0));
+        n.setPosition(pos.x, pos.y, 0);
+      }
+    } else {
+      n.setWorldPosition(wp);
+    }
+  }
+
+  pingMaxIndicator(lifeSec: number = 1.0) {
+    const n = this.maxIndicator;
+    if (!n) return;
+    this.updateMaxIndicatorPosition();
+    if (this.maxLoopActive) return;
+    if (this.maxPlaying) return;
+    this.showMaxIndicator();
+    if (this.maxTween) { try { this.maxTween.stop(); } catch {} }
+    this.maxAnimY = 0;
+    this.maxScale = 0;
+    this.maxPlaying = true;
+    const tw: any = (tween as any)(this as any);
+    this.maxTween = tw
+      .to(this.maxAppearSec, { maxAnimY: this.maxRiseY, maxScale: 1 } as any)
+      .delay(this.maxHoldSec)
+      .to(this.maxVanishSec, { maxAnimY: this.maxRiseY * 2, maxScale: 0 } as any)
+      .call(() => { this.hideMaxIndicator(); this.maxAnimY = 0; this.maxScale = 1; this.maxPlaying = false; })
+      .start();
+  }
+
+  setMaxLoopActive(active: boolean) {
+    if (active === this.maxLoopActive) return;
+    this.maxLoopActive = active;
+    if (active) this.startMaxLoop(); else this.stopMaxLoop();
+  }
+
+  private startMaxLoop() {
+    const n = this.maxIndicator;
+    if (!n) return;
+    this.updateMaxIndicatorPosition();
+    this.showMaxIndicator();
+    if (this.maxTween) { try { this.maxTween.stop(); } catch {} }
+    this.maxAnimY = 0;
+    this.maxScale = 0;
+    this.maxPlaying = true;
+    const twf: any = (tween as any)(this as any);
+    const seg: any = (tween as any)(this as any)
+      .to(this.maxAppearSec, { maxAnimY: this.maxRiseY, maxScale: 1 } as any)
+      .delay(this.maxHoldSec)
+      .to(this.maxVanishSec, { maxAnimY: this.maxRiseY * 2, maxScale: 0 } as any)
+      .delay(this.maxCyclePauseSec)
+      .call(() => { this.maxAnimY = 0; this.maxScale = 0; });
+    this.maxTween = twf.repeatForever(seg).start();
+  }
+
+  private stopMaxLoop() {
+    const n = this.maxIndicator;
+    if (!n) return;
+    if (this.maxTween) { try { this.maxTween.stop(); } catch {} this.maxTween = null; }
+    n.setScale(1, 1, 1);
+    this.hideMaxIndicator();
+    this.maxPlaying = false;
+  }
+
+  isMaxPlaying() { return this.maxPlaying; }
 
   /**
    * 尝试加入一个物品到堆叠。
@@ -31,22 +164,28 @@ export class CollectStack extends Component {
   tryAddItem(item: Node) {
     const parent = this.anchor ?? this.node;
     if (!parent) return false;
-    if (this.items.length >= this.capacity) return false;
+    if (this.items.length >= this.capacity) { this.updateMaxIndicatorPosition(); this.pingMaxIndicator(1.0); return false; }
     const idx = this.items.length;
     const col = idx % this.columns;
     const row = Math.floor(idx / this.columns);
     const x = (col - (this.columns - 1) * 0.5) * this.colSpacing;
     const y = this.baseY + row * this.rowSpacing;
     const z = -this.offsetZ;
+    const startWorld = item.worldPosition.clone();
     item.parent = parent;
+    item.setWorldPosition(startWorld);
     tween(item).to(0.15, { position: new Vec3(x, y, z) }).start();
     this.items.push(item);
+    this.updateMaxIndicatorPosition();
+    if (this.items.length >= this.capacity) this.pingMaxIndicator(1.0); else this.hideMaxIndicator();
     return true;
   }
 
   popTopRaw(): Node | null {
     const it = this.items.pop();
     if (!it) return null;
+    this.updateMaxIndicatorPosition();
+    if (this.items.length < this.capacity) this.hideMaxIndicator();
     return it;
   }
 
@@ -61,6 +200,8 @@ export class CollectStack extends Component {
       moved += 1;
       it.destroy();
     }
+    this.updateMaxIndicatorPosition();
+    if (this.items.length < this.capacity) this.hideMaxIndicator();
     return moved;
   }
 
@@ -79,6 +220,35 @@ export class CollectStack extends Component {
     const lp = new Vec3();
     Vec3.transformMat4(lp, targetWorld, inv);
     tween(it).to(duration, { position: lp }).call(() => { it.destroy(); }).start();
+    this.updateMaxIndicatorPosition();
+    if (this.items.length < this.capacity) this.hideMaxIndicator();
     return true;
+  }
+
+  private getWorldCamera(): Camera | null {
+    if (this.worldCameraNode) {
+      const c = this.worldCameraNode.getComponent(Camera);
+      if (c) return c;
+    }
+    const s = this.node.scene;
+    if (!s) return null;
+    const cams = s.getComponentsInChildren(Camera);
+    const list = cams.filter(c => {
+      let p: Node | null = c.node;
+      while (p) {
+        if (p.getComponent(Canvas)) return false;
+        p = p.parent;
+      }
+      return true;
+    });
+    return (list[0] || cams[0] || null);
+  }
+
+  update(dt: number) {
+    const n = this.maxIndicator;
+    if (!n) return;
+    if (!n.active && !this.maxPlaying && !this.maxLoopActive) return;
+    this.updateMaxIndicatorPosition();
+    n.setScale(this.maxScale, this.maxScale, 1);
   }
 }

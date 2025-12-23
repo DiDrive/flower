@@ -1,4 +1,4 @@
-import { _decorator, Component, Node, Vec3, tween, Animation, Vec2, Camera, Quat, SkeletalAnimation, RigidBody, CapsuleCollider } from 'cc';
+import { _decorator, Component, Node, Vec3, tween, Animation, Vec2, Camera, Quat, SkeletalAnimation, RigidBody, CapsuleCollider, CCInteger, Canvas, director, PhysicsSystem, Sprite, SpriteAtlas, SpriteFrame, UITransform, view, Color } from 'cc';
 import { Economy } from './Economy';
 import { ResourceNode } from './ResourceNode';
 import { Joystick } from './Joystick';
@@ -49,22 +49,46 @@ export class PlayerController extends Component {
   @property({ min: 0.1, tooltip: '相机跟随速度' }) camLag: number = 6;
   @property({ min: 0, tooltip: '相机软区半径（XZ）' }) camSoftRadius: number = 2;
   @property({ min: 0, tooltip: '相机前置距离' }) camLead: number = 3;
-  @property({ tooltip: '道具等级：0无、1剪刀、2割草、3吸尘' }) toolLevel: number = 0;
+  @property({ tooltip: '相机在lateUpdate更新' }) camUseLateUpdate: boolean = true;
+  @property({ tooltip: '相机锁定玩家屏幕中心' }) camLockCenter: boolean = true;
+  @property({ tooltip: '相机在物理后事件更新' }) camUseAfterPhysics: boolean = true;
+  @property({ tooltip: '相机平滑使用物理固定步长' }) camUseFixedDt: boolean = true;
+  @property({ tooltip: '道具等级：0无、1剪刀、2割草、3吸尘' }) toolLevel: number = 1;
   @property({ min: 0, tooltip: '收割动作退出维持时间（秒）' }) harvestHoldSec: number = 0.5;
   @property({ type: Node, tooltip: '剪刀道具节点（等级1）' }) toolScissors: Node | null = null;
   @property({ type: Node, tooltip: '割草机道具父节点（等级2）' }) toolMower: Node | null = null;
   @property({ type: Node, tooltip: '三级机器/吸尘器节点（等级3）' }) toolVacuum: Node | null = null;
   @property({ tooltip: '到采集范围内自动显示对应道具' }) autoToolVisibility: boolean = true;
   @property({ tooltip: '使用物理刚体速度驱动移动' }) physicsDrive: boolean = true;
+  @property({ type: [CCInteger], tooltip: '各等级花堆容量' }) stackCapacityByTool: number[] = [0, 10, 15, 20];
+  @property({ type: [CCInteger], tooltip: '各等级背包总容量' }) bagCapacityByTool: number[] = [5, 8, 12, 16];
+  @property({ type: SpriteAtlas, tooltip: '引导箭头图集' }) guideAtlas: SpriteAtlas | null = null;
+  @property({ tooltip: '箭头帧名' }) guideFrameName: string = 'arrow';
+  @property({ type: [Node], tooltip: '引导目标点列表' }) guideTargets: Node[] = [];
+  @property({ min: 0, tooltip: '靠近隐藏半径（XZ）' }) guideHideRadius: number = 120;
+  @property({ min: 0, tooltip: '自动前进阈值半径（XZ）' }) guideAdvanceRadius: number = 60;
+  @property({ tooltip: '引导在lateUpdate更新' }) guideUseLateUpdate: boolean = true;
+  @property({ tooltip: '使用视图缩放换算UI坐标' }) guideUseViewScale: boolean = true;
+  @property({ tooltip: '箭头屏幕坐标X偏移' }) guideScreenOffsetX: number = 0;
+  @property({ tooltip: '箭头屏幕坐标Y偏移' }) guideScreenOffsetY: number = 120;
+  @property({ min: 0, tooltip: '箭头世界高度Y偏移' }) guideWorldOffsetY: number = 200;
+  @property({ min: 0.1, tooltip: '箭头缩放' }) guideScale: number = 1;
+  @property({ tooltip: '靠近目标时自动前进' }) guideAutoAdvance: boolean = false;
 
   flowers = 0;
   breads = 0;
   coins = 0;
   private target: Vec3 | null = null;
+  private camUpdated: boolean = false;
+  private camFocusTimer: number = 0;
+  private camFocusHold: number = 0;
+  private camFocusTarget: Vec3 | null = null;
 
   private sa: SkeletalAnimation | null = null;
   private rb: RigidBody | null = null;
   private capsule: CapsuleCollider | null = null;
+  private guideArrow: Node | null = null;
+  private guideIndex: number = 0;
   onLoad() {
     const sa = this.node.getComponent(SkeletalAnimation) || this.node.getComponentInChildren(SkeletalAnimation);
     this.sa = sa || null;
@@ -92,6 +116,7 @@ export class PlayerController extends Component {
         if (map && typeof map === 'object') this.machine.setClipMap(map);
       } catch {}
     }
+    if (this.camUseAfterPhysics) director.on((director as any).EVENT_AFTER_PHYSICS, this.onAfterPhysics, this);
   }
   onEnable() {}
   onDisable() {}
@@ -99,6 +124,8 @@ export class PlayerController extends Component {
   private handoffCooldown = 0;
   private harvestHold = 0;
   private machine: ActionStateMachine | null = null;
+  private previewTimer = 0;
+  private prevHarvestFull = false;
 
   /**
    * 平滑相机跟随。
@@ -110,20 +137,19 @@ export class PlayerController extends Component {
     if (!this.worldCamera) return;
     const camNode = this.worldCamera.node;
     const p = this.node.worldPosition;
-    const leadX = stick.x * this.camLead;
-    const leadZ = -stick.y * this.camLead;
-    const target = new Vec3(p.x + this.camOffset.x + leadX, p.y + this.camOffset.y, p.z + this.camOffset.z + leadZ);
+    const leadX = this.camLockCenter ? 0 : (stick.x * this.camLead);
+    const leadZ = this.camLockCenter ? 0 : (-stick.y * this.camLead);
+    let target = new Vec3(p.x + this.camOffset.x + leadX, p.y + this.camOffset.y, p.z + this.camOffset.z + leadZ);
+    if ((this.camFocusTimer > 0 || this.camFocusHold > 0) && this.camFocusTarget) target = this.camFocusTarget.clone();
     const cur = camNode.worldPosition;
     const dx = target.x - cur.x;
     const dz = target.z - cur.z;
     const d = Math.hypot(dx, dz);
-    let nx = cur.x;
-    let nz = cur.z;
-    const a = Math.min(1, dt * this.camLag);
-    if (d > this.camSoftRadius) {
-      nx = cur.x + dx * a;
-      nz = cur.z + dz * a;
-    }
+    const dtEff = (this.camUseAfterPhysics && this.camUseFixedDt) ? PhysicsSystem.instance.fixedTimeStep : dt;
+    const a = 1 - Math.exp(-dtEff * this.camLag);
+    const useSoft = !this.camLockCenter;
+    const nx = useSoft && d <= this.camSoftRadius ? cur.x : cur.x + dx * a;
+    const nz = useSoft && d <= this.camSoftRadius ? cur.z : cur.z + dz * a;
     const ny = cur.y + (target.y - cur.y) * a;
     camNode.setWorldPosition(nx, ny, nz);
   }
@@ -137,7 +163,9 @@ export class PlayerController extends Component {
    * 4) 仅在剪辑变化且播放成功时切换，最后更新相机位置。
    */
   update(dt: number) {
+    this.camUpdated = false;
     if (this.handoffCooldown > 0) this.handoffCooldown = Math.max(0, this.handoffCooldown - dt);
+    if (this.previewTimer > 0) this.previewTimer = Math.max(0, this.previewTimer - dt);
     const cur = this.node.worldPosition;
     const stick = this.joystick?.dir ?? new Vec2(0, 0);
     const len = stick.length();
@@ -149,7 +177,7 @@ export class PlayerController extends Component {
        this.harvestHold = this.harvestHoldSec;
     else 
       this.harvestHold = Math.max(0, this.harvestHold - dt);
-    const inHarvest = inHarvestRaw || this.harvestHold > 0;// 采集范围内或收割维持时间内
+    const inHarvest = inHarvestRaw || this.harvestHold > 0;
     this.updateToolVisibility(inHarvest);
     if (len < this.moveDeadZone) {
       if (this.physicsDrive && this.rb) { this.rb.setLinearVelocity(new Vec3(0, 0, 0)); (this.rb as any).wakeUp?.(); }
@@ -183,7 +211,46 @@ export class PlayerController extends Component {
     }
     const next = this.machine?.decide(len, this.breads, this.toolLevel, inHarvest) ?? 'run';
     this.machine?.play(next);
+    if (!this.camUseLateUpdate && !this.camUseAfterPhysics) { this.updateCamera(dt, stick); this.camUpdated = true; }
+
+    const stackFull = !!this.stack && this.stack.count() >= this.stack.capacity;
+    const nowHF = inHarvest && stackFull;
+    if (nowHF) {
+      const s = this.stack;
+      if (s && !s.isMaxPlaying()) s.pingMaxIndicator(1.0);
+    } else {
+      this.stack?.setMaxLoopActive(false);
+    }
+    this.prevHarvestFull = nowHF;
+    if (this.camFocusTimer > 0) this.camFocusTimer = Math.max(0, this.camFocusTimer - dt);
+    else if (this.camFocusHold > 0) this.camFocusHold = Math.max(0, this.camFocusHold - dt);
+    else this.camFocusTarget = null;
+  }
+
+  lateUpdate(dt: number) {
+    const stick = this.joystick?.dir ?? new Vec2(0, 0);
+    const need = this.camUseLateUpdate || (this.camUseAfterPhysics && !this.camUpdated);
+    if (need) { this.updateCamera(dt, stick); this.camUpdated = true; }
+    if (this.guideUseLateUpdate) this.updateGuide(dt);
+  }
+
+  private onAfterPhysics() {
+    if (!this.camUseAfterPhysics) return;
+    const dt = director.getDeltaTime();
+    const stick = this.joystick?.dir ?? new Vec2(0, 0);
     this.updateCamera(dt, stick);
+    this.camUpdated = true;
+  }
+
+  public startCameraFocus(target: Vec3, moveSec: number = 1, holdSec: number = 0) {
+    this.camFocusTarget = target.clone();
+    this.camFocusTimer = Math.max(0.001, moveSec);
+    this.camFocusHold = Math.max(0, holdSec);
+  }
+  public stopCameraFocus() {
+    this.camFocusTarget = null;
+    this.camFocusTimer = 0;
+    this.camFocusHold = 0;
   }
 
 
@@ -212,6 +279,85 @@ export class PlayerController extends Component {
       if (d <= ci.pickupRadius) return true;
     }
     return false;
+  }
+
+  private ensureGuideArrow() {
+    if (this.guideArrow) return;
+    const cvsNode = this.getMainCanvasNode();
+    if (!cvsNode) return;
+    const root = new Node('GuideArrow');
+    root.parent = cvsNode;
+    root.setScale(this.guideScale, this.guideScale, 1);
+    const sp = root.addComponent(Sprite);
+    let f: SpriteFrame | null = null;
+    if (this.guideAtlas && this.guideFrameName) {
+      try { f = this.guideAtlas.getSpriteFrame(this.guideFrameName) || null; } catch {}
+    }
+    if (f) sp.spriteFrame = f;
+    else {
+      const fallback = new Color(255, 255, 255, 255);
+      sp.color = fallback;
+    }
+    this.guideArrow = root;
+  }
+
+  private updateGuide(dt: number) {
+    const tgt = this.guideTargets && this.guideTargets.length > 0 && this.guideIndex < this.guideTargets.length ? this.guideTargets[this.guideIndex] : null;
+    if (!tgt || !tgt.active) {
+      if (this.guideArrow) this.guideArrow.active = false;
+      return;
+    }
+    const cam = this.worldCamera;
+    if (!cam) return;
+    this.ensureGuideArrow();
+    const arrow = this.guideArrow;
+    if (!arrow) return;
+    const ui = arrow.parent?.getComponent(UITransform) || null;
+    if (!ui) return;
+    const p = this.node.worldPosition.clone();
+    p.y += this.guideWorldOffsetY;
+    const a = tgt.worldPosition.clone();
+    const spP = cam.worldToScreen(p);
+    const spA = cam.worldToScreen(a);
+    if (this.guideUseViewScale) {
+      const vs = view.getVisibleSize();
+      const x = spP.x / view.getScaleX() + this.guideScreenOffsetX - vs.width * 0.5;
+      const y = spP.y / view.getScaleY() + this.guideScreenOffsetY - vs.height * 0.5;
+      arrow.setPosition(x, y, 0);
+    } else {
+      const pos = ui.convertToNodeSpaceAR(new Vec3(spP.x + this.guideScreenOffsetX, spP.y + this.guideScreenOffsetY, 0));
+      arrow.setPosition(pos.x, pos.y, 0);
+    }
+    const dx = spA.x - spP.x;
+    const dy = spA.y - spP.y;
+    const ang = Math.atan2(dy, dx) * 180 / Math.PI;
+    (arrow as any).angle = ang;
+    const dXZ = Math.hypot(a.x - this.node.worldPosition.x, a.z - this.node.worldPosition.z);
+    let alpha = 1;
+    if (this.guideHideRadius > this.guideAdvanceRadius) {
+      const t = (dXZ - this.guideAdvanceRadius) / (this.guideHideRadius - this.guideAdvanceRadius);
+      alpha = Math.max(0, Math.min(1, t));
+    } else {
+      alpha = dXZ > this.guideHideRadius ? 1 : 0;
+    }
+    const sp = arrow.getComponent(Sprite);
+    if (sp) {
+      const c = sp.color;
+      sp.color = new Color(c.r, c.g, c.b, Math.floor(255 * alpha));
+    }
+    arrow.active = alpha > 0.01;
+    if (this.guideAutoAdvance && dXZ <= this.guideAdvanceRadius) this.nextGuide();
+  }
+
+  public setGuideTargets(list: Node[]) {
+    this.guideTargets = list || [];
+    this.guideIndex = 0;
+  }
+  public setGuideIndex(i: number) {
+    this.guideIndex = Math.max(0, Math.min(this.guideTargets.length - 1, i | 0));
+  }
+  public nextGuide() {
+    this.setGuideIndex(this.guideIndex + 1);
   }
 
   /** 是否还能携带指定数量的花朵（受总容量限制） */
@@ -310,7 +456,7 @@ export class PlayerController extends Component {
 
   private updateToolVisibility(inHarvest: boolean) {
     if (!this.autoToolVisibility) return;
-    const show = inHarvest && this.toolLevel > 0;
+    const show = (this.previewTimer > 0) || (inHarvest && this.toolLevel > 0);
     const t1 = this.toolScissors;
     const t2 = this.toolMower;
     const t3 = this.toolVacuum;
@@ -337,6 +483,27 @@ export class PlayerController extends Component {
 
   public setToolLevel(level: number) {
     this.toolLevel = Math.max(0, Math.min(3, level | 0));
+    this.previewTimer = 1.2;
+    const bag = this.bagCapacityByTool[this.toolLevel] ?? this.capacity;
+    this.capacity = bag;
+    if (this.stack) {
+      const cap = this.stackCapacityByTool[this.toolLevel] ?? this.stack.capacity;
+      this.stack.setCapacity(cap);
+      this.stack.worldCameraNode = this.worldCamera ? this.worldCamera.node : this.stack.worldCameraNode;
+      this.stack.uiCanvas = this.getMainCanvasNode();
+    }
+  }
+
+  private getMainCanvasNode(): Node | null {
+    const s = this.node.scene;
+    if (!s) return null;
+    const cvs = s.getComponentsInChildren((Canvas as any));
+    for (const cv of cvs as any[]) {
+      const n = (cv as any).node as Node;
+      const isUiCameraChild = n.getChildByName?.('UI_Camera') != null; // 兼容你的层级命名
+      if (isUiCameraChild || n.parent?.name === 'Main' || n.parent == null) return n;
+    }
+    return cvs.length > 0 ? (cvs[0] as any).node : null;
   }
 }
   

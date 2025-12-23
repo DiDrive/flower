@@ -17,5 +17,13 @@
       "1": 7,
       "2": 2
     }
+  },
+  "general": {
+    "designResolution": {
+      "width": 430,
+      "height": 932,
+      "fitWidth": true,
+      "fitHeight": false
+    }
   }
 }

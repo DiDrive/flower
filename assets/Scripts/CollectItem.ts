@@ -6,7 +6,7 @@ const { ccclass, property } = _decorator;
 export class CollectItem extends Component {
   @property({ min: 0.1, tooltip: '靠近拾取的半径（XZ平面）' }) pickupRadius: number = 2;
   @property({ min: 0, tooltip: '被采集后重生所需的秒数' }) respawnSec: number = 3;
-  @property({ min: 0, tooltip: '距离检测的时间间隔（秒；0为每帧）' }) scanInterval: number = 0;
+  @property({ min: 0, tooltip: '距离检测的时间间隔（秒；0为每帧）' }) scanInterval: number = 0.1;
   @property({ type: Prefab, tooltip: '被携带时使用的预制体（留空则克隆自身）' }) carryPrefab: Prefab | null = null;
 
   private acc = 0;
@@ -43,6 +43,8 @@ export class CollectItem extends Component {
    */
   private createCarryNode(): Node | null {
     const clone: Node = this.carryPrefab ? instantiate(this.carryPrefab) : instantiate(this.node);
+    const wp = this.node.worldPosition.clone();
+    clone.setWorldPosition(wp);
     const comps = clone.getComponentsInChildren(CollectItem);
     for (const c of comps) { c.enabled = false; c.destroy(); }
     return clone;

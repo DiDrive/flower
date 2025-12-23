@@ -1,6 +1,8 @@
-import { _decorator, Component, Node, Prefab, instantiate, Collider, ITriggerEvent, BoxCollider, Vec3, Vec4, MeshRenderer, SkinnedMeshRenderer, Color, Mat4 } from 'cc';
+import { _decorator, Component, Node, Prefab, instantiate, Collider, ITriggerEvent, BoxCollider, Vec3, Vec4, MeshRenderer, SkinnedMeshRenderer, Color, Mat4, tween } from 'cc';
 import { ProductState } from './ProductState';
 import { PlayerController } from './PlayerController';
+import { AssistantController } from './AssistantController';
+import { CollectStack } from './CollectStack';
 const { ccclass, property } = _decorator;
 
 /**
@@ -28,14 +30,31 @@ export class Factory extends Component {
   @property({ type: Node, tooltip: '上传区域触发器节点' }) uploadArea: Node | null = null;
   @property({ type: Node, tooltip: '拾取区域触发器节点' }) pickupArea: Node | null = null;
   @property({ tooltip: '进入区域高亮颜色' }) enterColor: Color = new Color(255, 216, 51, 255);
+  @property({ type: Node, tooltip: '上传摆放父节点（为空则用 uploadArea）' }) uploadRoot: Node | null = null;
+  @property({ min: 1, tooltip: '上传摆放最大数量' }) uploadMax: number = 24;
+  @property({ min: 1, tooltip: '上传摆放列数' }) uploadColumns: number = 4;
+  @property({ min: 0, tooltip: '上传列间距（X）' }) uploadColSpacing: number = 16;
+  @property({ min: 0, tooltip: '上传行间距（Y）' }) uploadRowSpacing: number = 12;
+  @property({ min: 0, tooltip: '上传起始高度（Y）' }) uploadBaseY: number = 0;
+  @property({ min: 0, tooltip: '上传前方偏移量（Z负）' }) uploadOffsetZ: number = 28;
+  @property({ min: 1, tooltip: '每次上传批量（件/次）' }) inputBurst: number = 3;
+  @property({ min: 0, tooltip: '上传抛物线峰值高度(Y)' }) uploadArcPeakY: number = 10;
+  @property({ min: 0.05, tooltip: '上传抛掷总时长(秒)' }) uploadThrowSec: number = 0.25;
+  @property({ min: 0, tooltip: '上传后停顿时长(秒)' }) uploadHoldSec: number = 0.05;
+  @property({ min: 0.05, tooltip: '上传消失缩小时长(秒)' }) uploadVanishSec: number = 0.35;
 
   private accIn = 0;
   private accOut = 0;
   private queue = 0;
+  private accInP = 0;
+  private accInA = 0;
   private accPickup = 0;
   private placed: Node[] = [];
+  private flowerPlaced: Node[] = [];
   private finalizePend: { n: Node; t: number }[] = [];
   private uploadHit = false;
+  private uploadHitP = false;
+  private uploadHitA = false;
   private pickupHit = false;
   private areas: { node: Node; col: Collider; setter: (v: boolean) => void; renders: { r: MeshRenderer | SkinnedMeshRenderer; orig: any[]; colors: any[] }[]; inside: boolean }[] = [];
 
@@ -67,19 +86,52 @@ export class Factory extends Component {
       }
     }
     const p = this.findPlayer();
-    if (p) {
-      if (this.uploadHit) {
-        this.accIn += dt;
-        if (this.accIn >= 1 / this.inputRate) {
-          this.accIn = 0;
-          if (this.queue < this.queueMax) {
-            const moved = p.removeFlower(1);
-            if (moved > 0) this.queue += moved;
-          }
+    const a = this.findAssistant();
+    // 逐主体上传：谁在区域里就只提交自己身上的花朵
+    if (this.uploadHitP) {
+      this.accInP += dt;
+      if (this.accInP >= 1 / this.inputRate) {
+        this.accInP = 0;
+        const parent = this.uploadRoot || this.uploadArea || this.node;
+        let burst = this.inputBurst;
+        while (burst-- > 0 && this.queue < this.queueMax && this.flowerPlaced.length < this.uploadMax) {
+          if (!(p && p.stack && p.stack.count() > 0)) break;
+          const it = p.stack.popTopRaw();
+          if (!it) break;
+          p.flowers = Math.max(0, p.flowers - 1);
+          const slotWorld = this.getUploadSlotWorld(this.flowerPlaced.length, parent);
+          const start = it.worldPosition.clone();
+          it.parent = parent;
+          it.setWorldPosition(start);
+          this.throwToPlace(it, parent, slotWorld, () => {
+            this.flowerPlaced.push(it!);
+            this.queue += 1;
+          });
         }
       }
     }
-    if (this.queue > 0) {
+    if (this.uploadHitA) {
+      this.accInA += dt;
+      if (this.accInA >= 1 / this.inputRate) {
+        this.accInA = 0;
+        const parent = this.uploadRoot || this.uploadArea || this.node;
+        let burst = this.inputBurst;
+        while (burst-- > 0 && this.queue < this.queueMax && this.flowerPlaced.length < this.uploadMax) {
+          if (!(a && a.flowerStack && a.flowerStack.count() > 0)) break;
+          const it = a.flowerStack.popTopRaw();
+          if (!it) break;
+          const slotWorld = this.getUploadSlotWorld(this.flowerPlaced.length, parent);
+          const start = it.worldPosition.clone();
+          it.parent = parent;
+          it.setWorldPosition(start);
+          this.throwToPlace(it, parent, slotWorld, () => {
+            this.flowerPlaced.push(it!);
+            this.queue += 1;
+          });
+        }
+      }
+    }
+    if (this.queue > 0 && this.flowerPlaced.length > 0) {
       this.accOut += dt;
       if (this.accOut >= 1 / this.produceRate) {
         this.accOut = 0;
@@ -98,13 +150,22 @@ export class Factory extends Component {
           n.setPosition(x, y, z);
           this.placed.push(n);
           this.queue -= 1;
+          const f = this.flowerPlaced.pop() || null;
+          if (f) this.vanishFlower(f);
         }
       }
     }
 
-    if (p) {
+    {
       for (const it of this.areas) {
-        const inside = this.isInsideAreaXZ(p.node.worldPosition, it.node, it.col);
+        const ip = p ? this.isInsideAreaXZ(p.node.worldPosition, it.node, it.col) : false;
+        const ia = a ? this.isInsideAreaXZ(a.node.worldPosition, it.node, it.col) : false;
+        const inside = ip || ia;
+        // 若该区域是上传区域，记录逐主体的命中
+        if (it.node === this.uploadArea) {
+          this.uploadHitP = ip;
+          this.uploadHitA = ia;
+        }
         it.setter(inside);
         if (inside !== it.inside) {
           it.inside = inside;
@@ -112,7 +173,7 @@ export class Factory extends Component {
           else this.restoreAreaColor(it);
         }
       }
-      if (this.pickupHit) {
+      if (p && this.pickupHit) {
         this.accPickup += dt;
         if (this.accPickup >= 1 / this.pickupRate) {
           this.accPickup = 0;
@@ -165,14 +226,14 @@ export class Factory extends Component {
     console.log('[Factory] bindAreaTrigger', node.name, 'isTrigger=', col.isTrigger);
     col.on('onTriggerEnter', (e: ITriggerEvent) => {
       console.log('[Factory] trigger enter', e.otherCollider?.node?.name);
-      if (this.isPlayerCollider(e.otherCollider)) setter(true);
+      if (this.isPlayerCollider(e.otherCollider) || this.isAssistantCollider(e.otherCollider)) setter(true);
     }, this);
     col.on('onTriggerStay', (e: ITriggerEvent) => {
-      if (this.isPlayerCollider(e.otherCollider)) setter(true);
+      if (this.isPlayerCollider(e.otherCollider) || this.isAssistantCollider(e.otherCollider)) setter(true);
     }, this);
     col.on('onTriggerExit', (e: ITriggerEvent) => {
       console.log('[Factory] trigger exit', e.otherCollider?.node?.name);
-      if (this.isPlayerCollider(e.otherCollider)) setter(false);
+      if (this.isPlayerCollider(e.otherCollider) || this.isAssistantCollider(e.otherCollider)) setter(false);
     }, this);
     col.on('onCollisionEnter', (e: any) => {
       console.log('[Factory] collision enter', (e?.otherCollider as any)?.node?.name);
@@ -231,6 +292,16 @@ export class Factory extends Component {
     return false;
   }
 
+  private isAssistantCollider(other: Collider | null): boolean {
+    if (!other) return false;
+    let n: Node | null = other.node;
+    while (n) {
+      if (n.getComponent(AssistantController)) return true;
+      n = n.parent;
+    }
+    return false;
+  }
+
   private isInsideAreaXZ(p: Vec3, areaNode: Node, col: Collider): boolean {
     const bc = col instanceof BoxCollider ? col : null;
     if (!bc) return false;
@@ -243,6 +314,68 @@ export class Factory extends Component {
     const hx = bc.size.x * 0.5;
     const hz = bc.size.z * 0.5;
     return Math.abs(dx) <= hx && Math.abs(dz) <= hz;
+  }
+
+  private getUploadSlotWorld(idx: number, root: Node): Vec3 {
+    const col = idx % this.uploadColumns;
+    const row = Math.floor(idx / this.uploadColumns);
+    const x = (col - (this.uploadColumns - 1) * 0.5) * this.uploadColSpacing;
+    const y = this.uploadBaseY + row * this.uploadRowSpacing;
+    const z = -this.uploadOffsetZ;
+    const local = new Vec3(x, y, z);
+    const world = new Vec3();
+    Vec3.transformMat4(world, local, root.worldMatrix);
+    return world;
+  }
+
+  private throwToPlace(item: Node, parent: Node, targetWorld: Vec3, onArrive?: () => void) {
+    const inv = new Mat4();
+    Mat4.invert(inv, parent.worldMatrix);
+    const lp = new Vec3();
+    Vec3.transformMat4(lp, targetWorld, inv);
+    const start = item.position.clone();
+    const mid = new Vec3((start.x + lp.x) * 0.5, (start.y + lp.y) * 0.5 + this.uploadArcPeakY, (start.z + lp.z) * 0.5);
+    tween(item)
+      .to(this.uploadThrowSec * 0.5, { position: mid })
+      .to(this.uploadThrowSec * 0.5, { position: lp })
+      .call(() => { if (onArrive) onArrive(); })
+      .start();
+  }
+
+  private vanishFlower(item: Node) {
+    tween(item)
+      .to(this.uploadVanishSec, { scale: new Vec3(0, 0, 0) })
+      .call(() => { item.destroy(); })
+      .start();
+  }
+
+  private throwAndVanish(item: Node, parent: Node, targetWorld: Vec3, onDone?: () => void) {
+    const inv = new Mat4();
+    Mat4.invert(inv, parent.worldMatrix);
+    const lp = new Vec3();
+    Vec3.transformMat4(lp, targetWorld, inv);
+    const start = item.position.clone();
+    const mid = new Vec3((start.x + lp.x) * 0.5, (start.y + lp.y) * 0.5 + this.uploadArcPeakY, (start.z + lp.z) * 0.5);
+    tween(item)
+      .to(this.uploadThrowSec * 0.5, { position: mid })
+      .to(this.uploadThrowSec * 0.5, { position: lp })
+      .delay(this.uploadHoldSec)
+      .to(this.uploadVanishSec, { scale: new Vec3(0, 0, 0) })
+      .call(() => { try { (onDone || (() => {}))(); } finally { item.destroy(); } })
+      .start();
+  }
+
+  private getUploadCenterWorld(): Vec3 | null {
+    const na = this.uploadArea;
+    if (!na) return null;
+    const col = na.getComponent(Collider) || na.getComponentInChildren(Collider);
+    const bc = col instanceof BoxCollider ? col : null;
+    if (!bc) return na.worldPosition.clone();
+    const centerLocal = new Vec3(bc.center.x, bc.center.y, bc.center.z);
+    const m = na.worldMatrix;
+    const out = new Vec3();
+    Vec3.transformMat4(out, centerLocal, m);
+    return out;
   }
 
   
@@ -258,6 +391,13 @@ export class Factory extends Component {
         try { (m as any).setProperty?.('mainColor', color); } catch {}
       }
     }
+  }
+
+  private findAssistant(): AssistantController | null {
+    const n = this.node.scene;
+    if (!n) return null;
+    const list = n.getComponentsInChildren(AssistantController);
+    return list.length > 0 ? list[0] : null;
   }
 
   private restoreAreaColor(it: { renders: { r: MeshRenderer | SkinnedMeshRenderer; orig: any[]; colors: any[] }[] }) {

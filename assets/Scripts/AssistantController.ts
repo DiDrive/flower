@@ -10,7 +10,7 @@ const { ccclass, property } = _decorator
 export class AssistantController extends Component {
   @property({ tooltip: '助手角色：harvester 或 seller' }) role: 'harvester' | 'seller' = 'harvester'
   @property({ tooltip: '移动速度（单位/秒）' }) speed: number = 3
-  @property({ min: 0, tooltip: '最大携带数量' }) capacity: number = 10
+  @property({ min: 1, tooltip: '最大携带数量' }) capacity: number = 10
   @property({ type: Factory, tooltip: '工厂引用' }) factory: Factory | null = null
   @property({ type: Market, tooltip: '市场引用' }) market: Market | null = null
   @property({ type: Animation, tooltip: '角色动画（idle/run）' }) anim: Animation | null = null
@@ -80,14 +80,7 @@ export class AssistantController extends Component {
         const need = 1 / this.deliverRate
         if (this.accDeliver >= need && this.carryCount() > 0) {
           this.accDeliver = 0
-          const want = Math.min(this.carryCount(), this.deliverBatch)
-          const moved = this.factory.acceptFlower(want)
-          const parent = this.node.parent ?? this.node
-          for (let i = 0; i < moved; i++) {
-            const pos = this.factory.uploadArea?.worldPosition.clone()
-            if (pos) this.flowerStack?.popTopToWorld(parent, pos, 0.25)
-            else this.flowerStack?.removeTop(1)
-          }
+          // 上传动画与转入队列由 Factory 在其 update 中按 inputRate 处理
         }
       }
       if (this.carryCount() <= 0) { this.uploading = false; this.target = null; this.harvestHold = 0; this.harvesting = false }
@@ -95,7 +88,8 @@ export class AssistantController extends Component {
     }
 
     // 满载才去上传；否则采集
-    if (this.carryCount() >= this.capacity) {
+    const cap = Math.max(1, this.capacity)
+    if (this.carryCount() >= cap) {
       this.uploading = true
       this.harvestHold = 0
       this.harvesting = false
@@ -204,6 +198,7 @@ export class AssistantController extends Component {
   private harvestToCarry(ci: CollectItem): Node | null {
     // 模拟 CollectItem 的携带克隆
     const clone: Node = ci.carryPrefab ? instantiate(ci.carryPrefab) : instantiate(ci.node)
+    clone.setWorldPosition(ci.node.worldPosition.clone())
     const comps = clone.getComponentsInChildren(CollectItem)
     for (const c of comps) { c.enabled = false; c.destroy() }
     ci.node.active = false
@@ -231,9 +226,8 @@ export class AssistantController extends Component {
   }
 
   private carryCount(): number {
-    const f = this.flowerStack?.count() ?? 0
-    const b = this.breadStack?.count() ?? 0
-    return f + b
+    if (this.role === 'harvester') return this.flowerStack?.count() ?? 0
+    return this.breadStack?.count() ?? 0
   }
 
   private breadCount(): number {

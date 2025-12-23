@@ -12,29 +12,47 @@ export class Joystick extends Component {
   @property({ type: Node, tooltip: '摇杆球节点' }) knob: Node | null = null;
   @property({ min: 10, tooltip: '摇杆半径（像素）' }) radius: number = 80;
   @property({ min: 0, tooltip: '死区，方向向量长度小于该值视为0（0~1）' }) deadZone: number = 0.1;
+  @property({ tooltip: '浮动摇杆：触摸位置出现' }) floating: boolean = true;
+  @property({ tooltip: '松手后自动隐藏' }) autoHide: boolean = true;
+  @property({ type: Node, tooltip: '触摸根节点（例如Canvas），空则为本节点' }) touchRoot: Node | null = null;
+  @property({ min: 0, tooltip: '隐藏时缩放' }) hideScale: number = 0.001;
+  @property({ min: 0, tooltip: '显示时缩放' }) showScale: number = 1;
 
   dir: Vec2 = new Vec2(0, 0);
   private dragging = false;
+  private evtNode: Node | null = null;
 
   /** 注册触摸事件 */
   onEnable() {
-    this.node.on(Node.EventType.TOUCH_START, this.onStart, this);
-    this.node.on(Node.EventType.TOUCH_MOVE, this.onMove, this);
-    this.node.on(Node.EventType.TOUCH_END, this.onEnd, this);
-    this.node.on(Node.EventType.TOUCH_CANCEL, this.onEnd, this);
+    this.evtNode = this.touchRoot || this.node;
+    const n = this.evtNode;
+    if (!n) return;
+    n.on(Node.EventType.TOUCH_START, this.onStart, this);
+    n.on(Node.EventType.TOUCH_MOVE, this.onMove, this);
+    n.on(Node.EventType.TOUCH_END, this.onEnd, this);
+    n.on(Node.EventType.TOUCH_CANCEL, this.onEnd, this);
   }
 
   /** 取消触摸事件 */
   onDisable() {
-    this.node.off(Node.EventType.TOUCH_START, this.onStart, this);
-    this.node.off(Node.EventType.TOUCH_MOVE, this.onMove, this);
-    this.node.off(Node.EventType.TOUCH_END, this.onEnd, this);
-    this.node.off(Node.EventType.TOUCH_CANCEL, this.onEnd, this);
+    const n = this.evtNode || this.node;
+    n.off(Node.EventType.TOUCH_START, this.onStart, this);
+    n.off(Node.EventType.TOUCH_MOVE, this.onMove, this);
+    n.off(Node.EventType.TOUCH_END, this.onEnd, this);
+    n.off(Node.EventType.TOUCH_CANCEL, this.onEnd, this);
   }
 
   /** 开始拖拽并更新一次方向 */
   onStart(e: EventTouch) {
     this.dragging = true;
+    if (this.autoHide) this.node.setScale(this.showScale, this.showScale, this.showScale);
+    if (this.floating) {
+      const parent = this.node.parent?.getComponent(UITransform);
+      const p = e.getUILocation();
+      const local = parent ? parent.convertToNodeSpaceAR(new Vec3(p.x, p.y, 0)) : new Vec3(p.x, p.y, 0);
+      this.node.setPosition(local.x, local.y, this.node.position.z);
+      if (this.knob) this.knob.setPosition(new Vec3(0, 0, this.knob.position.z));
+    }
     this.updateByTouch(e);
   }
 
@@ -49,6 +67,7 @@ export class Joystick extends Component {
     this.dragging = false;
     this.dir.set(0, 0);
     if (this.knob) this.knob.setPosition(new Vec3(0, 0, this.knob.position.z));
+    if (this.autoHide) this.node.setScale(this.hideScale, this.hideScale, this.hideScale);
   }
 
   /** 将屏幕触点转换到本地坐标并计算方向向量 */
