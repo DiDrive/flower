@@ -1,4 +1,5 @@
 import { _decorator, Component, Node, Prefab, instantiate, Collider, ITriggerEvent, BoxCollider, Vec3, Vec4, MeshRenderer, SkinnedMeshRenderer, Color, Mat4, tween } from 'cc';
+import type { TweenEasing } from 'cc';
 import { ProductState } from './ProductState';
 import { PlayerController } from './PlayerController';
 import { AssistantController } from './AssistantController';
@@ -38,10 +39,19 @@ export class Factory extends Component {
   @property({ min: 0, tooltip: '上传起始高度（Y）' }) uploadBaseY: number = 0;
   @property({ min: 0, tooltip: '上传前方偏移量（Z负）' }) uploadOffsetZ: number = 28;
   @property({ min: 1, tooltip: '每次上传批量（件/次）' }) inputBurst: number = 3;
+  @property({ min: 0.01, tooltip: '上传分隔时长(秒，Burst逐个间隔)' }) inputBurstGapSec: number = 0.06;
   @property({ min: 0, tooltip: '上传抛物线峰值高度(Y)' }) uploadArcPeakY: number = 10;
   @property({ min: 0.05, tooltip: '上传抛掷总时长(秒)' }) uploadThrowSec: number = 0.25;
   @property({ min: 0, tooltip: '上传后停顿时长(秒)' }) uploadHoldSec: number = 0.05;
   @property({ min: 0.05, tooltip: '上传消失缩小时长(秒)' }) uploadVanishSec: number = 0.35;
+  @property({ tooltip: '上传抛掷缓动' }) uploadEasing: TweenEasing = 'sineInOut';
+  @property({ type: Node, tooltip: '面包产出起始节点' }) produceFromNode: Node | null = null;
+  @property({ min: 0, tooltip: '产出抛物线峰值高度(Y)' }) produceArcPeakY: number = 10;
+  @property({ min: 0.05, tooltip: '产出抛掷总时长(秒)' }) produceThrowSec: number = 0.28;
+  @property({ tooltip: '产出抛掷缓动' }) produceEasing: TweenEasing = 'sineInOut';
+  @property({ min: 0, tooltip: '产出中空中缩放倍数' }) produceShrink: number = 0.85;
+  @property({ min: 0, tooltip: '落地瞬间放大倍数' }) produceOvershoot: number = 1.15;
+  @property({ min: 0.01, tooltip: '落地后回到正常缩放时长(秒)' }) produceSettleSec: number = 0.1;
 
   private accIn = 0;
   private accOut = 0;
@@ -50,7 +60,16 @@ export class Factory extends Component {
   private accInA = 0;
   private accPickup = 0;
   private placed: Node[] = [];
-  private flowerPlaced: Node[] = [];
+  private flowerSlots: (Node | null)[] = [];
+  private reservedSlots: Set<number> = new Set();
+  private vanishingSlots: Set<number> = new Set();
+  private breadSlots: (Node | null)[] = [];
+  private breadReservedSlots: Set<number> = new Set();
+  private uploadInFlight: number = 0;
+  private pendingP: number = 0;
+  private pendingA: number = 0;
+  private gapAccP: number = 0;
+  private gapAccA: number = 0;
   private finalizePend: { n: Node; t: number }[] = [];
   private uploadHit = false;
   private uploadHitP = false;
@@ -92,66 +111,125 @@ export class Factory extends Component {
       this.accInP += dt;
       if (this.accInP >= 1 / this.inputRate) {
         this.accInP = 0;
+        this.pendingP += Math.max(1, this.inputBurst | 0);
+      }
+      this.gapAccP += dt;
+      while (this.pendingP > 0 && this.gapAccP >= this.inputBurstGapSec) {
+        this.gapAccP -= this.inputBurstGapSec;
         const parent = this.uploadRoot || this.uploadArea || this.node;
-        let burst = this.inputBurst;
-        while (burst-- > 0 && this.queue < this.queueMax && this.flowerPlaced.length < this.uploadMax) {
-          if (!(p && p.stack && p.stack.count() > 0)) break;
-          const it = p.stack.popTopRaw();
-          if (!it) break;
-          p.flowers = Math.max(0, p.flowers - 1);
-          const slotWorld = this.getUploadSlotWorld(this.flowerPlaced.length, parent);
-          const start = it.worldPosition.clone();
-          it.parent = parent;
-          it.setWorldPosition(start);
+        if ((this.queue + this.uploadInFlight) >= this.queueMax) break;
+        if (!(p && p.stack && p.stack.count() > 0)) break;
+        const it = p.stack.popTopRaw();
+        if (!it) break;
+        p.flowers = Math.max(0, p.flowers - 1);
+        const idx = this.findFreeSlot();
+        const start = it.worldPosition.clone();
+        it.parent = parent;
+        it.setWorldPosition(start);
+        this.uploadInFlight += 1;
+        if (idx >= 0) {
+          const slotWorld = this.getUploadSlotWorld(idx, parent);
+          this.reservedSlots.add(idx);
           this.throwToPlace(it, parent, slotWorld, () => {
-            this.flowerPlaced.push(it!);
+            this.reservedSlots.delete(idx);
+            this.flowerSlots[idx] = it!;
             this.queue += 1;
+            this.uploadInFlight = Math.max(0, this.uploadInFlight - 1);
+          });
+        } else {
+          const center = this.getUploadCenterWorld() || this.getUploadSlotWorld(Math.max(0, this.uploadMax - 1), parent);
+          this.throwAndVanish(it, parent, center, () => {
+            this.queue += 1;
+            this.uploadInFlight = Math.max(0, this.uploadInFlight - 1);
           });
         }
+        this.pendingP -= 1;
       }
+    } else {
+      this.pendingP = 0;
+      this.gapAccP = 0;
     }
     if (this.uploadHitA) {
       this.accInA += dt;
       if (this.accInA >= 1 / this.inputRate) {
         this.accInA = 0;
+        this.pendingA += Math.max(1, this.inputBurst | 0);
+      }
+      this.gapAccA += dt;
+      while (this.pendingA > 0 && this.gapAccA >= this.inputBurstGapSec) {
+        this.gapAccA -= this.inputBurstGapSec;
         const parent = this.uploadRoot || this.uploadArea || this.node;
-        let burst = this.inputBurst;
-        while (burst-- > 0 && this.queue < this.queueMax && this.flowerPlaced.length < this.uploadMax) {
-          if (!(a && a.flowerStack && a.flowerStack.count() > 0)) break;
-          const it = a.flowerStack.popTopRaw();
-          if (!it) break;
-          const slotWorld = this.getUploadSlotWorld(this.flowerPlaced.length, parent);
-          const start = it.worldPosition.clone();
-          it.parent = parent;
-          it.setWorldPosition(start);
+        if ((this.queue + this.uploadInFlight) >= this.queueMax) break;
+        if (!(a && a.flowerStack && a.flowerStack.count() > 0)) break;
+        const it = a.flowerStack.popTopRaw();
+        if (!it) break;
+        const idx = this.findFreeSlot();
+        const start = it.worldPosition.clone();
+        it.parent = parent;
+        it.setWorldPosition(start);
+        this.uploadInFlight += 1;
+        if (idx >= 0) {
+          const slotWorld = this.getUploadSlotWorld(idx, parent);
+          this.reservedSlots.add(idx);
           this.throwToPlace(it, parent, slotWorld, () => {
-            this.flowerPlaced.push(it!);
+            this.reservedSlots.delete(idx);
+            this.flowerSlots[idx] = it!;
             this.queue += 1;
+            this.uploadInFlight = Math.max(0, this.uploadInFlight - 1);
+          });
+        } else {
+          const center = this.getUploadCenterWorld() || this.getUploadSlotWorld(Math.max(0, this.uploadMax - 1), parent);
+          this.throwAndVanish(it, parent, center, () => {
+            this.queue += 1;
+            this.uploadInFlight = Math.max(0, this.uploadInFlight - 1);
           });
         }
+        this.pendingA -= 1;
       }
+    } else {
+      this.pendingA = 0;
+      this.gapAccA = 0;
     }
-    if (this.queue > 0 && this.flowerPlaced.length > 0) {
+    if (this.queue > 0) {
       this.accOut += dt;
       if (this.accOut >= 1 / this.produceRate) {
         this.accOut = 0;
-        if (this.breadPrefab && this.spawnRoot && this.placed.length < this.placedMax) {
+        if (this.breadPrefab && this.spawnRoot && this.occupiedBreadSlotsCount() < this.placedMax) {
           const n = instantiate(this.breadPrefab);
           n.parent = this.spawnRoot;
           const ps = n.getComponentInChildren(ProductState);
           if (ps) ps.setSemi();
           if (this.finalizeDelaySec > 0) this.finalizePend.push({ n, t: this.finalizeDelaySec });
-          const idx = this.placed.length;
-          const col = idx % this.placedColumns;
-          const row = Math.floor(idx / this.placedColumns);
+          const idxBread = this.findBreadFreeSlot();
+          const col = idxBread % this.placedColumns;
+          const row = Math.floor(idxBread / this.placedColumns);
           const x = (col - (this.placedColumns - 1) * 0.5) * this.placedColSpacing;
           const y = this.placedBaseY + row * this.placedRowSpacing;
           const z = -this.placedOffsetZ;
-          n.setPosition(x, y, z);
-          this.placed.push(n);
+          const targetLocal = new Vec3(x, y, z);
+          const startWorld = this.getProduceStartWorld() ?? this.node.worldPosition.clone();
+          n.setWorldPosition(startWorld);
+          const s0 = n.scale.clone();
+          const s1 = new Vec3(s0.x * this.produceShrink, s0.y * this.produceShrink, s0.z);
+          const s2 = new Vec3(s0.x * this.produceOvershoot, s0.y * this.produceOvershoot, s0.z);
+          this.breadReservedSlots.add(idxBread);
+          this.throwProduce(n, this.spawnRoot, targetLocal, s0, s1, s2, () => {
+            this.breadReservedSlots.delete(idxBread);
+            this.breadSlots[idxBread] = n;
+            this.placed.push(n);
+          });
           this.queue -= 1;
-          const f = this.flowerPlaced.pop() || null;
-          if (f) this.vanishFlower(f);
+          const topIdx = this.topFlowerIndex();
+          if (topIdx >= 0) {
+            const f = this.flowerSlots[topIdx] as Node;
+            if (f && !this.vanishingSlots.has(topIdx)) {
+              this.vanishingSlots.add(topIdx);
+              this.vanishFlower(f, () => {
+                this.flowerSlots[topIdx] = null;
+                this.vanishingSlots.delete(topIdx);
+              });
+            }
+          }
         }
       }
     }
@@ -161,7 +239,6 @@ export class Factory extends Component {
         const ip = p ? this.isInsideAreaXZ(p.node.worldPosition, it.node, it.col) : false;
         const ia = a ? this.isInsideAreaXZ(a.node.worldPosition, it.node, it.col) : false;
         const inside = ip || ia;
-        // 若该区域是上传区域，记录逐主体的命中
         if (it.node === this.uploadArea) {
           this.uploadHitP = ip;
           this.uploadHitA = ia;
@@ -177,10 +254,23 @@ export class Factory extends Component {
         this.accPickup += dt;
         if (this.accPickup >= 1 / this.pickupRate) {
           this.accPickup = 0;
-          const idx = this.placed.length - 1;
-          const item = idx >= 0 ? this.placed[idx] : null;
-          if (item && p.tryAddBreadItem(item)) {
-            this.placed.pop();
+          const item = this.takeBreadFromTop();
+          if (item) {
+            if (!p.tryAddBreadItem(item)) {
+              const idx = this.findBreadFreeSlot();
+              const parent = this.spawnRoot || this.node;
+              const col = idx % this.placedColumns;
+              const row = Math.floor(idx / this.placedColumns);
+              const x = (col - (this.placedColumns - 1) * 0.5) * this.placedColSpacing;
+              const y = this.placedBaseY + row * this.placedRowSpacing;
+              const z = -this.placedOffsetZ;
+              const inv = new Mat4(); Mat4.invert(inv, parent.worldMatrix);
+              const lp = new Vec3(x, y, z);
+              item.parent = parent;
+              item.setPosition(lp);
+              this.breadSlots[idx] = item;
+              this.placed.push(item);
+            }
           }
         }
       }
@@ -207,11 +297,9 @@ export class Factory extends Component {
   takeBread(count: number): Node[] {
     const out: Node[] = []
     for (let i = 0; i < count; i++) {
-      const idx = this.placed.length - 1
-      const item = idx >= 0 ? this.placed[idx] : null
+      const item = this.takeBreadFromTop()
       if (!item) break
       out.push(item)
-      this.placed.pop()
     }
     return out
   }
@@ -319,13 +407,52 @@ export class Factory extends Component {
   private getUploadSlotWorld(idx: number, root: Node): Vec3 {
     const col = idx % this.uploadColumns;
     const row = Math.floor(idx / this.uploadColumns);
-    const x = (col - (this.uploadColumns - 1) * 0.5) * this.uploadColSpacing;
-    const y = this.uploadBaseY + row * this.uploadRowSpacing;
+    const colSp = this.uploadColSpacing > 0 ? this.uploadColSpacing : 16;
+    const rowSp = this.uploadRowSpacing > 0 ? this.uploadRowSpacing : 12;
+    const x = (col - (this.uploadColumns - 1) * 0.5) * colSp;
+    const y = this.uploadBaseY + row * rowSp;
     const z = -this.uploadOffsetZ;
     const local = new Vec3(x, y, z);
     const world = new Vec3();
     Vec3.transformMat4(world, local, root.worldMatrix);
     return world;
+  }
+
+  private ensureSlotArray() {
+    const n = Math.max(1, this.uploadMax | 0)
+    if (this.flowerSlots.length !== n) {
+      const old = this.flowerSlots
+      this.flowerSlots = new Array(n).fill(null)
+      for (let i = 0; i < Math.min(old.length, n); i++) this.flowerSlots[i] = old[i]
+      this.reservedSlots.clear()
+      this.vanishingSlots.clear()
+    }
+  }
+
+  private findFreeSlot(): number {
+    this.ensureSlotArray()
+    for (let i = 0; i < this.uploadMax; i++) {
+      const used = !!this.flowerSlots[i]
+      const resv = this.reservedSlots.has(i)
+      const vani = this.vanishingSlots.has(i)
+      if (!used && !resv && !vani) return i
+    }
+    return -1
+  }
+
+  private occupiedSlotsCount(): number {
+    this.ensureSlotArray()
+    let c = 0
+    for (let i = 0; i < this.uploadMax; i++) if (this.flowerSlots[i]) c++
+    return c + this.reservedSlots.size + this.vanishingSlots.size
+  }
+
+  private topFlowerIndex(): number {
+    this.ensureSlotArray()
+    for (let i = this.uploadMax - 1; i >= 0; i--) {
+      if (this.flowerSlots[i] && !this.vanishingSlots.has(i)) return i
+    }
+    return -1
   }
 
   private throwToPlace(item: Node, parent: Node, targetWorld: Vec3, onArrive?: () => void) {
@@ -336,16 +463,16 @@ export class Factory extends Component {
     const start = item.position.clone();
     const mid = new Vec3((start.x + lp.x) * 0.5, (start.y + lp.y) * 0.5 + this.uploadArcPeakY, (start.z + lp.z) * 0.5);
     tween(item)
-      .to(this.uploadThrowSec * 0.5, { position: mid })
-      .to(this.uploadThrowSec * 0.5, { position: lp })
+      .to(this.uploadThrowSec * 0.5, { position: mid }, { easing: this.uploadEasing })
+      .to(this.uploadThrowSec * 0.5, { position: lp }, { easing: this.uploadEasing })
       .call(() => { if (onArrive) onArrive(); })
       .start();
   }
 
-  private vanishFlower(item: Node) {
+  private vanishFlower(item: Node, onDone?: () => void) {
     tween(item)
       .to(this.uploadVanishSec, { scale: new Vec3(0, 0, 0) })
-      .call(() => { item.destroy(); })
+      .call(() => { try { (onDone || (() => {}))(); } finally { item.destroy(); } })
       .start();
   }
 
@@ -357,8 +484,8 @@ export class Factory extends Component {
     const start = item.position.clone();
     const mid = new Vec3((start.x + lp.x) * 0.5, (start.y + lp.y) * 0.5 + this.uploadArcPeakY, (start.z + lp.z) * 0.5);
     tween(item)
-      .to(this.uploadThrowSec * 0.5, { position: mid })
-      .to(this.uploadThrowSec * 0.5, { position: lp })
+      .to(this.uploadThrowSec * 0.5, { position: mid }, { easing: this.uploadEasing })
+      .to(this.uploadThrowSec * 0.5, { position: lp }, { easing: this.uploadEasing })
       .delay(this.uploadHoldSec)
       .to(this.uploadVanishSec, { scale: new Vec3(0, 0, 0) })
       .call(() => { try { (onDone || (() => {}))(); } finally { item.destroy(); } })
@@ -376,6 +503,71 @@ export class Factory extends Component {
     const out = new Vec3();
     Vec3.transformMat4(out, centerLocal, m);
     return out;
+  }
+
+  private getProduceStartWorld(): Vec3 | null {
+    const n = this.produceFromNode || this.uploadArea || this.node
+    return n ? n.worldPosition.clone() : null
+  }
+
+  private throwProduce(item: Node, parent: Node, targetLocal: Vec3, s0: Vec3, sShrink: Vec3, sOver: Vec3, onArrive?: () => void) {
+    const start = item.position.clone()
+    const mid = new Vec3((start.x + targetLocal.x) * 0.5, (start.y + targetLocal.y) * 0.5 + this.produceArcPeakY, (start.z + targetLocal.z) * 0.5)
+    const tw: any = (tween as any)(item)
+      .to(this.produceThrowSec * 0.5, { position: mid, scale: sShrink }, { easing: this.produceEasing })
+      .to(this.produceThrowSec * 0.5, { position: targetLocal, scale: sOver }, { easing: this.produceEasing })
+      .to(this.produceSettleSec, { scale: s0 }, { easing: 'sineOut' })
+      .call(() => { try { if (onArrive) onArrive(); (item as any).__factoryTween = null } catch {} })
+      .start()
+    ;(item as any).__factoryTween = tw
+  }
+
+  private ensureBreadSlotArray() {
+    const n = Math.max(1, this.placedMax | 0)
+    if (this.breadSlots.length !== n) {
+      const old = this.breadSlots
+      this.breadSlots = new Array(n).fill(null)
+      for (let i = 0; i < Math.min(old.length, n); i++) this.breadSlots[i] = old[i]
+      this.breadReservedSlots.clear()
+    }
+  }
+
+  private findBreadFreeSlot(): number {
+    this.ensureBreadSlotArray()
+    for (let i = 0; i < this.placedMax; i++) {
+      const used = !!this.breadSlots[i]
+      const resv = this.breadReservedSlots.has(i)
+      if (!used && !resv) return i
+    }
+    return Math.max(0, this.placedMax - 1)
+  }
+
+  private occupiedBreadSlotsCount(): number {
+    this.ensureBreadSlotArray()
+    let c = 0
+    for (let i = 0; i < this.placedMax; i++) if (this.breadSlots[i]) c++
+    return c + this.breadReservedSlots.size
+  }
+
+  private topBreadIndex(): number {
+    this.ensureBreadSlotArray()
+    for (let i = this.placedMax - 1; i >= 0; i--) {
+      if (this.breadSlots[i]) return i
+    }
+    return -1
+  }
+
+  private takeBreadFromTop(): Node | null {
+    const idx = this.topBreadIndex()
+    if (idx < 0) return null
+    const item = this.breadSlots[idx] as Node
+    const tw: any = (item as any).__factoryTween
+    if (tw) { try { tw.stop() } catch {} ; (item as any).__factoryTween = null }
+    try { (tween as any).stopAllByTarget?.(item) } catch {}
+    this.breadSlots[idx] = null
+    const j = this.placed.indexOf(item)
+    if (j >= 0) this.placed.splice(j, 1)
+    return item
   }
 
   
@@ -397,7 +589,17 @@ export class Factory extends Component {
     const n = this.node.scene;
     if (!n) return null;
     const list = n.getComponentsInChildren(AssistantController);
-    return list.length > 0 ? list[0] : null;
+    if (!list || list.length === 0) return null;
+    const ua = this.uploadArea;
+    const col = ua ? (ua.getComponent(Collider) || ua.getComponentInChildren(Collider)) : null;
+    if (ua && col) {
+      for (const a of list) {
+        const has = !!a.flowerStack && a.flowerStack.count() > 0;
+        if (!has) continue;
+        if (this.isInsideAreaXZ(a.node.worldPosition, ua, col)) return a;
+      }
+    }
+    return list[0];
   }
 
   private restoreAreaColor(it: { renders: { r: MeshRenderer | SkinnedMeshRenderer; orig: any[]; colors: any[] }[] }) {

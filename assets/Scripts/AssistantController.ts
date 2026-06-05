@@ -127,13 +127,13 @@ export class AssistantController extends Component {
       if (this.market?.sellArea && this.isInsideAreaXZ(this.market.sellArea)) {
         this.inSellArea = true
         this.accDeliver += dt
-        const need = 1 / this.deliverRate
+        const need = this.market?.stagePlaceIntervalSec ?? (1 / this.deliverRate)
         if (this.accDeliver >= need && this.breadCount() > 0) {
           this.accDeliver = 0
           const count = Math.min(this.deliverBatch, this.breadCount())
           for (let i = 0; i < count; i++) {
             const it = this.breadStack?.popTopRaw() || null
-            if (it && this.market) this.market.stageBreadItem(it)
+            if (it && this.market) { this.market.stageBreadItem(it) }
           }
         }
       }

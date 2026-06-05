@@ -1,4 +1,5 @@
 import { EventTarget } from 'cc';
+import { emit } from '../PlayableFramework/PlayableEvents';
 
 /**
  * Economy 轻量金币系统。
@@ -8,9 +9,15 @@ import { EventTarget } from 'cc';
 class Economy {
   static coins = 0;
   static bus = new EventTarget();
+  static firstCoinFired = false;
   /** 增加金币并广播当前金币数 */
   static add(n: number) {
+    const before = Economy.coins;
     Economy.coins += n;
+    if (!Economy.firstCoinFired && before <= 0 && Economy.coins > 0) {
+      emit('first-coin');
+      Economy.firstCoinFired = true;
+    }
     Economy.bus.emit('coins', Economy.coins);
   }
   /** 尝试消耗金币，成功返回 true 并广播当前金币数 */

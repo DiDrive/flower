@@ -1,0 +1,77 @@
+CCEffect %{
+  techniques:
+  - passes:
+    - vert: vs
+      frag: fs
+      name: edge-blend
+      priority: 100
+      blendState:
+        targets:
+          - blend: true
+            blendSrc: src_alpha
+            blendDst: one_minus_src_alpha
+      rasterizerState:
+        cullMode: none
+      depthStencilState:
+        depthTest: true
+        depthWrite: false
+      properties:
+        mainTexture: { value: white }
+        mainColor: { value: [1, 1, 1, 1] }
+        edgeWidth: { value: 0.08 }
+        edgeSoftness: { value: 0.15 }
+        noiseScale: { value: 8.0 }
+        noiseStrength: { value: 0.2 }
+%}
+
+#include <builtin/transform>
+
+in vec3 a_position;
+in vec2 a_texCoord;
+out vec2 v_uv;
+
+void vs() {
+  v_uv = a_texCoord;
+  vec4 pos = vec4(a_position, 1.0);
+  CC_SET_POSITION(pos);
+}
+
+in vec2 v_uv;
+uniform sampler2D mainTexture;
+uniform vec4 mainColor;
+uniform float edgeWidth;
+uniform float edgeSoftness;
+uniform float noiseScale;
+uniform float noiseStrength;
+
+float h12(vec2 p) {
+  float h = dot(p, vec2(127.1, 311.7));
+  return fract(sin(h) * 43758.5453123);
+}
+
+float n2(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  float a = h12(i);
+  float b = h12(i + vec2(1.0, 0.0));
+  float c = h12(i + vec2(0.0, 1.0));
+  float d = h12(i + vec2(1.0, 1.0));
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(a, b, u.x) + (c - a) * u.y * (1.0 - u.x) + (d - b) * u.x * u.y;
+}
+
+void fs() {
+  vec2 uv = v_uv;
+  vec4 base = texture(mainTexture, uv) * mainColor;
+  float dx = min(uv.x, 1.0 - uv.x);
+  float dy = min(uv.y, 1.0 - uv.y);
+  float d = min(dx, dy);
+  float n = n2(uv * noiseScale);
+  float w = edgeWidth + (n - 0.5) * noiseStrength;
+  float m = smoothstep(w, w + edgeSoftness, d);
+  base.a *= m;
+  CCFragOutput o;
+  CC_INIT_FRAGMENT(o);
+  o.fragColor = base;
+  CC_FRAGMENT(o);
+}

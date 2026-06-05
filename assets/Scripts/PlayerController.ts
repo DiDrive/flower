@@ -1,10 +1,12 @@
-import { _decorator, Component, Node, Vec3, tween, Animation, Vec2, Camera, Quat, SkeletalAnimation, RigidBody, CapsuleCollider, CCInteger, Canvas, director, PhysicsSystem, Sprite, SpriteAtlas, SpriteFrame, UITransform, view, Color } from 'cc';
+import { _decorator, Component, Node, Vec3, tween, Animation, Vec2, Camera, Quat, SkeletalAnimation, RigidBody, CapsuleCollider, CCInteger, Canvas, director, PhysicsSystem, SpriteFrame, UITransform, view, UIOpacity, Collider, BoxCollider, Mat4 } from 'cc';
 import { Economy } from './Economy';
 import { ResourceNode } from './ResourceNode';
 import { Joystick } from './Joystick';
 import { CollectStack } from './CollectStack';
 import { CollectItem } from './CollectItem';
 import { ActionStateMachine } from './ActionStateMachine';
+import { ExpansionZone } from './ExpansionZone';
+import { ToolUpgradeZone } from './ToolUpgradeZone';
 const { ccclass, property } = _decorator;
 
 /**
@@ -47,6 +49,8 @@ export class PlayerController extends Component {
   @property({ min: 0, tooltip: '采集/交互后短暂保护时间（秒）' }) handoffCooldownSec: number = 0.5;
   @property({ tooltip: '相机相对玩家偏移' }) camOffset: Vec3 = new Vec3(0, 12, 12);
   @property({ min: 0.1, tooltip: '相机跟随速度' }) camLag: number = 6;
+  @property({ tooltip: '模型朝向相对世界默认前向的额外偏移角度' }) modelYawOffset: number = 0;
+  @property({ tooltip: '自动移动期间额外的朝向偏移角度' }) autoFacingYawExtra: number = 180;
   @property({ min: 0, tooltip: '相机软区半径（XZ）' }) camSoftRadius: number = 2;
   @property({ min: 0, tooltip: '相机前置距离' }) camLead: number = 3;
   @property({ tooltip: '相机在lateUpdate更新' }) camUseLateUpdate: boolean = true;
@@ -62,18 +66,20 @@ export class PlayerController extends Component {
   @property({ tooltip: '使用物理刚体速度驱动移动' }) physicsDrive: boolean = true;
   @property({ type: [CCInteger], tooltip: '各等级花堆容量' }) stackCapacityByTool: number[] = [0, 10, 15, 20];
   @property({ type: [CCInteger], tooltip: '各等级背包总容量' }) bagCapacityByTool: number[] = [5, 8, 12, 16];
-  @property({ type: SpriteAtlas, tooltip: '引导箭头图集' }) guideAtlas: SpriteAtlas | null = null;
-  @property({ tooltip: '箭头帧名' }) guideFrameName: string = 'arrow';
+  @property({ min: 0, tooltip: '初始金币（测试用）' }) startCoins: number = 0;
   @property({ type: [Node], tooltip: '引导目标点列表' }) guideTargets: Node[] = [];
   @property({ min: 0, tooltip: '靠近隐藏半径（XZ）' }) guideHideRadius: number = 120;
   @property({ min: 0, tooltip: '自动前进阈值半径（XZ）' }) guideAdvanceRadius: number = 60;
   @property({ tooltip: '引导在lateUpdate更新' }) guideUseLateUpdate: boolean = true;
   @property({ tooltip: '使用视图缩放换算UI坐标' }) guideUseViewScale: boolean = true;
-  @property({ tooltip: '箭头屏幕坐标X偏移' }) guideScreenOffsetX: number = 0;
-  @property({ tooltip: '箭头屏幕坐标Y偏移' }) guideScreenOffsetY: number = 120;
   @property({ min: 0, tooltip: '箭头世界高度Y偏移' }) guideWorldOffsetY: number = 200;
-  @property({ min: 0.1, tooltip: '箭头缩放' }) guideScale: number = 1;
-  @property({ tooltip: '靠近目标时自动前进' }) guideAutoAdvance: boolean = false;
+  @property({ min: 0, tooltip: '箭头在XZ平面距离玩家的半径' }) guideArrowDistance: number = 120;
+  @property({ tooltip: '第1步采集达到上限后前进' }) guideFirstHarvestFull: boolean = true;
+  @property({ type: [Node], tooltip: '各步停留区域节点（留空则用对应目标）' }) guideAreas: Node[] = [];
+  @property({ type: [CCInteger], tooltip: '各步停留时长（秒，整数）' }) guideAreaStaySecs: number[] = [];
+  @property({ min: 0, tooltip: '区域到达的默认半径（无碰撞体时）' }) guideAreaRadius: number = 80;
+  @property({ min: 0, tooltip: '默认停留时长（秒）' }) guideDefaultStaySec: number = 0.6;
+  @property({ tooltip: '禁止移动（升级/演出期间）' }) controlLocked: boolean = false;
 
   flowers = 0;
   breads = 0;
@@ -83,12 +89,15 @@ export class PlayerController extends Component {
   private camFocusTimer: number = 0;
   private camFocusHold: number = 0;
   private camFocusTarget: Vec3 | null = null;
+  private coinAnchorOrigPos: Vec3 | null = null;
 
   private sa: SkeletalAnimation | null = null;
   private rb: RigidBody | null = null;
   private capsule: CapsuleCollider | null = null;
   private guideArrow: Node | null = null;
   private guideIndex: number = 0;
+  @property({ type: Node, tooltip: 'UI箭头节点（外部提供）' }) guideArrowNode: Node | null = null;
+  private guideStayTimer: number = 0;
   onLoad() {
     const sa = this.node.getComponent(SkeletalAnimation) || this.node.getComponentInChildren(SkeletalAnimation);
     this.sa = sa || null;
@@ -117,6 +126,10 @@ export class PlayerController extends Component {
       } catch {}
     }
     if (this.camUseAfterPhysics) director.on((director as any).EVENT_AFTER_PHYSICS, this.onAfterPhysics, this);
+    this.coins = Math.max(0, this.startCoins | 0);
+    Economy.coins = this.coins;
+    (Economy as any).bus?.emit?.('coins', Economy.coins);
+    if (this.coinStack && this.coinStack.anchor) this.coinAnchorOrigPos = this.coinStack.anchor.position.clone();
   }
   onEnable() {}
   onDisable() {}
@@ -126,6 +139,11 @@ export class PlayerController extends Component {
   private machine: ActionStateMachine | null = null;
   private previewTimer = 0;
   private prevHarvestFull = false;
+  private controlLockTimer = 0;
+  private autoMoveClip: string | null = null;
+  private autoCamOffset: Vec3 | null = null;
+  private autoFacingDest: Vec3 | null = null;
+  private breadHiddenForHarvest: boolean = false;
 
   /**
    * 平滑相机跟随。
@@ -137,9 +155,10 @@ export class PlayerController extends Component {
     if (!this.worldCamera) return;
     const camNode = this.worldCamera.node;
     const p = this.node.worldPosition;
+    const off = this.autoCamOffset || this.camOffset;
     const leadX = this.camLockCenter ? 0 : (stick.x * this.camLead);
     const leadZ = this.camLockCenter ? 0 : (-stick.y * this.camLead);
-    let target = new Vec3(p.x + this.camOffset.x + leadX, p.y + this.camOffset.y, p.z + this.camOffset.z + leadZ);
+    let target = new Vec3(p.x + off.x + leadX, p.y + off.y, p.z + off.z + leadZ);
     if ((this.camFocusTimer > 0 || this.camFocusHold > 0) && this.camFocusTarget) target = this.camFocusTarget.clone();
     const cur = camNode.worldPosition;
     const dx = target.x - cur.x;
@@ -164,13 +183,23 @@ export class PlayerController extends Component {
    */
   update(dt: number) {
     this.camUpdated = false;
+    if (this.controlLockTimer > 0) { this.controlLockTimer = Math.max(0, this.controlLockTimer - dt); if (this.controlLockTimer <= 0) this.controlLocked = false; }
     if (this.handoffCooldown > 0) this.handoffCooldown = Math.max(0, this.handoffCooldown - dt);
     if (this.previewTimer > 0) this.previewTimer = Math.max(0, this.previewTimer - dt);
     const cur = this.node.worldPosition;
-    const stick = this.joystick?.dir ?? new Vec2(0, 0);
+    const stick = this.controlLocked ? new Vec2(0, 0) : (this.joystick?.dir ?? new Vec2(0, 0));
     const len = stick.length();
     if (this.breadStack) {
       this.breads = this.breadStack.count();
+    }
+    if (this.stack && this.coinStack) {
+      const ca = this.coinStack.anchor;
+      const fa = this.stack.anchor;
+      if (ca && fa) {
+        const hasFlower = this.stack.count() > 0;
+        if (!hasFlower) ca.setWorldPosition(fa.worldPosition);
+        else if (this.coinAnchorOrigPos) ca.setPosition(this.coinAnchorOrigPos);
+      }
     }
     const inHarvestRaw = this.isInHarvestArea();
     if (inHarvestRaw)
@@ -179,7 +208,28 @@ export class PlayerController extends Component {
       this.harvestHold = Math.max(0, this.harvestHold - dt);
     const inHarvest = inHarvestRaw || this.harvestHold > 0;
     this.updateToolVisibility(inHarvest);
+    if (this.breadStack) {
+      const hasBread = this.breadStack.count() > 0;
+      const anchor = this.breadStack.anchor;
+      if (anchor) {
+        if (hasBread && inHarvest && !this.breadHiddenForHarvest) { anchor.active = false; this.breadHiddenForHarvest = true; }
+        else if (hasBread && !inHarvest && this.breadHiddenForHarvest) { anchor.active = true; this.breadHiddenForHarvest = false; }
+        else if (!hasBread && this.breadHiddenForHarvest) { anchor.active = true; this.breadHiddenForHarvest = false; }
+      }
+    }
     if (len < this.moveDeadZone) {
+      if (this.autoMoveClip) {
+        if (this.autoFacingDest) {
+          const curW = this.node.worldPosition.clone();
+          const dx = this.autoFacingDest.x - curW.x;
+          const dz = this.autoFacingDest.z - curW.z;
+          const yaw = Math.atan2(dx, -dz) * 180 / Math.PI + this.modelYawOffset + this.autoFacingYawExtra;
+          const q = new Quat(); Quat.fromEuler(q, 0, yaw, 0); this.node.setWorldRotation(q);
+        }
+        this.machine?.play(this.autoMoveClip);
+        if (!this.camUseLateUpdate && !this.camUseAfterPhysics) { this.updateCamera(dt, stick); this.camUpdated = true; }
+        return;
+      }
       if (this.physicsDrive && this.rb) { this.rb.setLinearVelocity(new Vec3(0, 0, 0)); (this.rb as any).wakeUp?.(); }
       const next = this.machine?.decide(0, this.breads, this.toolLevel, inHarvest) ?? 'idle';
       this.machine?.play(next);
@@ -187,7 +237,7 @@ export class PlayerController extends Component {
     }
     const v = this.flowers + this.breads > 0 ? this.speed * 0.8 : this.speed;
     if (this.useXZ) {
-      const yaw = Math.atan2(stick.x, -stick.y) * 180 / Math.PI;
+      const yaw = Math.atan2(stick.x, -stick.y) * 180 / Math.PI + this.modelYawOffset;
       const q = new Quat();
       Quat.fromEuler(q, 0, yaw, 0);
       this.node.setWorldRotation(q);
@@ -214,17 +264,27 @@ export class PlayerController extends Component {
     if (!this.camUseLateUpdate && !this.camUseAfterPhysics) { this.updateCamera(dt, stick); this.camUpdated = true; }
 
     const stackFull = !!this.stack && this.stack.count() >= this.stack.capacity;
+    const wasHF = this.prevHarvestFull;
     const nowHF = inHarvest && stackFull;
-    if (nowHF) {
-      const s = this.stack;
-      if (s && !s.isMaxPlaying()) s.pingMaxIndicator(1.0);
-    } else {
-      this.stack?.setMaxLoopActive(false);
-    }
+    if (this.stack) this.stack.setMaxLoopActive(nowHF);
+    if (nowHF && !wasHF) this.stack?.pingMaxIndicator(1.0);
     this.prevHarvestFull = nowHF;
     if (this.camFocusTimer > 0) this.camFocusTimer = Math.max(0, this.camFocusTimer - dt);
     else if (this.camFocusHold > 0) this.camFocusHold = Math.max(0, this.camFocusHold - dt);
-    else this.camFocusTarget = null;
+    else {
+      if (this.camFocusTarget) {
+        this.camFocusTarget = null;
+        const cam = this.worldCamera || this.getWorldCamera();
+        if (cam) {
+          const p2 = this.node.worldPosition.clone();
+          const off2 = this.autoCamOffset || this.camOffset;
+          cam.node.setWorldPosition(p2.x + off2.x, p2.y + off2.y, p2.z + off2.z);
+        }
+      } else {
+        this.camFocusTarget = null;
+      }
+    }
+    if (!this.guideUseLateUpdate) this.tickGuideProgress(dt);
   }
 
   lateUpdate(dt: number) {
@@ -232,6 +292,7 @@ export class PlayerController extends Component {
     const need = this.camUseLateUpdate || (this.camUseAfterPhysics && !this.camUpdated);
     if (need) { this.updateCamera(dt, stick); this.camUpdated = true; }
     if (this.guideUseLateUpdate) this.updateGuide(dt);
+    if (this.guideUseLateUpdate) this.tickGuideProgress(dt);
   }
 
   private onAfterPhysics() {
@@ -242,15 +303,81 @@ export class PlayerController extends Component {
     this.camUpdated = true;
   }
 
-  public startCameraFocus(target: Vec3, moveSec: number = 1, holdSec: number = 0) {
-    this.camFocusTarget = target.clone();
+  private camFocusSessionSeq = 0;
+  private camFocusSessionActive = 0;
+  public startCameraFocus(target: Vec3, moveSec: number = 1, holdSec: number = 0): number {
+    const off = this.autoCamOffset || this.camOffset;
+    const t = new Vec3(target.x + off.x, target.y + off.y, target.z + off.z);
+    this.camFocusTarget = t;
     this.camFocusTimer = Math.max(0.001, moveSec);
     this.camFocusHold = Math.max(0, holdSec);
+    this.camFocusSessionActive = (++this.camFocusSessionSeq);
+    return this.camFocusSessionActive;
   }
-  public stopCameraFocus() {
+  public setControlLocked(flag: boolean) { this.controlLocked = !!flag; if (!flag) this.controlLockTimer = 0; }
+  public lockControlFor(sec: number = 0) { const d = Math.max(0, sec); this.controlLocked = d > 0; this.controlLockTimer = d; }
+  public stopCameraFocus(sessionId?: number) {
+    if (sessionId && sessionId !== this.camFocusSessionActive) return;
     this.camFocusTarget = null;
     this.camFocusTimer = 0;
     this.camFocusHold = 0;
+    this.camFocusSessionActive = 0;
+    const cam = this.worldCamera || this.getWorldCamera();
+    if (cam) {
+      const p = this.node.worldPosition.clone();
+      const off = this.autoCamOffset || this.camOffset;
+      const nx = p.x + off.x;
+      const ny = p.y + off.y;
+      const nz = p.z + off.z;
+      cam.node.setWorldPosition(nx, ny, nz);
+    }
+  }
+
+  public isCameraFocusing(): boolean {
+    return (this.camFocusTimer > 0) || (this.camFocusHold > 0);
+  }
+
+  public faceToWorld(target: Vec3) {
+    const cur = this.node.worldPosition.clone();
+    const dx = target.x - cur.x;
+    const dz = target.z - cur.z;
+    const yaw = Math.atan2(dx, -dz) * 180 / Math.PI + this.modelYawOffset + (this.autoFacingDest ? this.autoFacingYawExtra : 0);
+    const q = new Quat();
+    Quat.fromEuler(q, 0, yaw, 0);
+    this.node.setWorldRotation(q);
+  }
+
+  public faceToCamera() {
+    const cam = this.worldCamera || this.getWorldCamera();
+    if (!cam) return;
+    const cur = this.node.worldPosition.clone();
+    const c = cam.node.worldPosition.clone();
+    const dx = c.x - cur.x;
+    const dz = c.z - cur.z;
+    const yaw = Math.atan2(dx, -dz) * 180 / Math.PI + 180;
+    const q = new Quat();
+    Quat.fromEuler(q, 0, yaw, 0);
+    this.node.setWorldRotation(q);
+  }
+
+  public playAutoMoving() {
+    const clip = this.breads > 0 ? 'carry_run' : 'run';
+    this.autoMoveClip = clip;
+    this.machine?.play(clip);
+  }
+
+  public playAutoIdle() {
+    const clip = this.breads > 0 ? 'carry_idle' : 'idle';
+    this.autoMoveClip = null;
+    this.machine?.play(clip);
+  }
+
+  public setAutoCamOffset(offset: Vec3 | null) {
+    this.autoCamOffset = offset ? offset.clone() : null;
+  }
+
+  public setAutoFacingTarget(wpos: Vec3 | null) {
+    this.autoFacingDest = wpos ? wpos.clone() : null;
   }
 
 
@@ -283,70 +410,113 @@ export class PlayerController extends Component {
 
   private ensureGuideArrow() {
     if (this.guideArrow) return;
-    const cvsNode = this.getMainCanvasNode();
-    if (!cvsNode) return;
-    const root = new Node('GuideArrow');
-    root.parent = cvsNode;
-    root.setScale(this.guideScale, this.guideScale, 1);
-    const sp = root.addComponent(Sprite);
-    let f: SpriteFrame | null = null;
-    if (this.guideAtlas && this.guideFrameName) {
-      try { f = this.guideAtlas.getSpriteFrame(this.guideFrameName) || null; } catch {}
+    if (this.guideArrowNode) {
+      this.guideArrow = this.guideArrowNode;
+      if (!this.guideArrow.getComponent(UIOpacity)) this.guideArrow.addComponent(UIOpacity);
+      return;
     }
-    if (f) sp.spriteFrame = f;
-    else {
-      const fallback = new Color(255, 255, 255, 255);
-      sp.color = fallback;
-    }
-    this.guideArrow = root;
   }
 
   private updateGuide(dt: number) {
     const tgt = this.guideTargets && this.guideTargets.length > 0 && this.guideIndex < this.guideTargets.length ? this.guideTargets[this.guideIndex] : null;
-    if (!tgt || !tgt.active) {
+    if (!tgt) {
       if (this.guideArrow) this.guideArrow.active = false;
       return;
     }
-    const cam = this.worldCamera;
+    const cam = this.worldCamera || this.getWorldCamera();
     if (!cam) return;
     this.ensureGuideArrow();
     const arrow = this.guideArrow;
     if (!arrow) return;
     const ui = arrow.parent?.getComponent(UITransform) || null;
     if (!ui) return;
-    const p = this.node.worldPosition.clone();
-    p.y += this.guideWorldOffsetY;
-    const a = tgt.worldPosition.clone();
-    const spP = cam.worldToScreen(p);
-    const spA = cam.worldToScreen(a);
+    const pWorld = this.node.worldPosition.clone();
+    const aWorld = tgt.worldPosition.clone();
+    const dirX = aWorld.x - pWorld.x;
+    const dirZ = aWorld.z - pWorld.z;
+    const len = Math.hypot(dirX, dirZ);
+    const offX = len > 0.0001 ? (dirX / len) * this.guideArrowDistance : 0;
+    const offZ = len > 0.0001 ? (dirZ / len) * this.guideArrowDistance : 0;
+    const anchor = new Vec3(pWorld.x + offX, pWorld.y + this.guideWorldOffsetY, pWorld.z + offZ);
+    const spAnchor = cam.worldToScreen(anchor);
+    const spA = cam.worldToScreen(aWorld);
     if (this.guideUseViewScale) {
       const vs = view.getVisibleSize();
-      const x = spP.x / view.getScaleX() + this.guideScreenOffsetX - vs.width * 0.5;
-      const y = spP.y / view.getScaleY() + this.guideScreenOffsetY - vs.height * 0.5;
+      const x = spAnchor.x / view.getScaleX() - vs.width * 0.5;
+      const y = spAnchor.y / view.getScaleY() - vs.height * 0.5;
       arrow.setPosition(x, y, 0);
     } else {
-      const pos = ui.convertToNodeSpaceAR(new Vec3(spP.x + this.guideScreenOffsetX, spP.y + this.guideScreenOffsetY, 0));
+      const pos = ui.convertToNodeSpaceAR(new Vec3(spAnchor.x, spAnchor.y, 0));
       arrow.setPosition(pos.x, pos.y, 0);
     }
-    const dx = spA.x - spP.x;
-    const dy = spA.y - spP.y;
+    const dx = spA.x - spAnchor.x;
+    const dy = spA.y - spAnchor.y;
     const ang = Math.atan2(dy, dx) * 180 / Math.PI;
     (arrow as any).angle = ang;
-    const dXZ = Math.hypot(a.x - this.node.worldPosition.x, a.z - this.node.worldPosition.z);
+    const area = this.pickGuideArea(this.guideIndex);
+    const center = area ? area.worldPosition.clone() : aWorld;
+    const dXZ = Math.hypot(center.x - pWorld.x, center.z - pWorld.z);
+    const insideArea = this.isInsideGuideAreaXZ(pWorld, area);
     let alpha = 1;
-    if (this.guideHideRadius > this.guideAdvanceRadius) {
+    if (insideArea) {
+      alpha = 0;
+    } else if (this.guideHideRadius > this.guideAdvanceRadius) {
       const t = (dXZ - this.guideAdvanceRadius) / (this.guideHideRadius - this.guideAdvanceRadius);
       alpha = Math.max(0, Math.min(1, t));
     } else {
       alpha = dXZ > this.guideHideRadius ? 1 : 0;
     }
-    const sp = arrow.getComponent(Sprite);
-    if (sp) {
-      const c = sp.color;
-      sp.color = new Color(c.r, c.g, c.b, Math.floor(255 * alpha));
+    const op = arrow.getComponent(UIOpacity);
+    if (op) op.opacity = Math.max(0, Math.min(255, Math.floor(255 * alpha)));
+    arrow.active = alpha > 0.02;
+    
+  }
+
+  private tickGuideProgress(dt: number) {
+    if (this.guideIndex < 0) this.guideIndex = 0;
+    if (this.guideIndex >= this.guideTargets.length) return;
+    const area = this.pickGuideArea(this.guideIndex);
+    if (this.guideIndex === 0 && this.guideFirstHarvestFull && !area) {
+      const s = this.stack;
+      const full = !!s && s.count() >= s.capacity;
+      if (full) { this.nextGuide(); this.guideStayTimer = 0; }
+      return;
     }
-    arrow.active = alpha > 0.01;
-    if (this.guideAutoAdvance && dXZ <= this.guideAdvanceRadius) this.nextGuide();
+    const needSecRaw = this.guideAreaStaySecs[this.guideIndex] ?? this.guideDefaultStaySec;
+    const needSec = Math.max(0, Number(needSecRaw));
+    const p = this.node.worldPosition.clone();
+    const inside = this.isInsideGuideAreaXZ(p, area);
+    if (inside) {
+      this.guideStayTimer += dt;
+      if (this.guideStayTimer >= needSec) { this.nextGuide(); this.guideStayTimer = 0; }
+    } else {
+      this.guideStayTimer = 0;
+    }
+  }
+
+  private pickGuideArea(i: number): Node | null {
+    const n = this.guideAreas && this.guideAreas[i] ? this.guideAreas[i] : null;
+    return n || null;
+  }
+
+  private isInsideGuideAreaXZ(p: Vec3, area: Node | null): boolean {
+    if (!area) return false;
+    const node = area;
+    const bc = node.getComponent(BoxCollider) || node.getComponentInChildren(BoxCollider);
+    if (bc) {
+      const inv = new Mat4();
+      Mat4.invert(inv, bc.node.worldMatrix);
+      const lp = new Vec3();
+      Vec3.transformMat4(lp, p, inv);
+      const dx = lp.x - bc.center.x;
+      const dz = lp.z - bc.center.z;
+      const hx = bc.size.x * 0.5;
+      const hz = bc.size.z * 0.5;
+      return Math.abs(dx) <= hx && Math.abs(dz) <= hz;
+    }
+    const a = area.worldPosition.clone();
+    const d = Math.hypot(a.x - p.x, a.z - p.z);
+    return d <= this.guideAreaRadius;
   }
 
   public setGuideTargets(list: Node[]) {
@@ -355,15 +525,41 @@ export class PlayerController extends Component {
   }
   public setGuideIndex(i: number) {
     this.guideIndex = Math.max(0, Math.min(this.guideTargets.length - 1, i | 0));
+    this.guideStayTimer = 0;
   }
   public nextGuide() {
     this.setGuideIndex(this.guideIndex + 1);
+    this.fireGuideForCurrentStep();
+  }
+
+  private fireGuideForCurrentStep() {
+    const tgt = this.guideTargets && this.guideTargets.length > 0 && this.guideIndex < this.guideTargets.length ? this.guideTargets[this.guideIndex] : null;
+    const k = tgt && tgt.name ? tgt.name : '';
+    if (!k) return;
+    try { (ExpansionZone as any).fireGuide?.(k); } catch {}
+    try { (ToolUpgradeZone as any).fireGuide?.(k); } catch {}
+  }
+
+  private getWorldCamera(): Camera | null {
+    if (this.worldCamera) return this.worldCamera;
+    const s = this.node.scene;
+    if (!s) return null;
+    const cams = s.getComponentsInChildren(Camera);
+    const list = cams.filter(c => {
+      let p: Node | null = c.node;
+      while (p) {
+        if (p.getComponent(Canvas)) return false;
+        p = p.parent;
+      }
+      return true;
+    });
+    return (list[0] || cams[0] || null);
   }
 
   /** 是否还能携带指定数量的花朵（受总容量限制） */
   canCarryFlower(n: number) {
-    const current = this.stack ? this.stack.count() : this.flowers;
-    return current + this.breads + this.coins + n <= this.capacity;
+    if (this.stack) return (this.stack.count() + n) <= this.stack.capacity;
+    return (this.flowers + n) <= this.capacity;
   }
   /** 将一个花朵物品加入堆叠，成功时增加计数并触发交接冷却 */
   tryAddFlowerItem(item: Node) {
@@ -387,8 +583,14 @@ export class PlayerController extends Component {
   }
   /** 直接增加携带的面包数量（不超过容量） */
   addBread(n: number) {
-    const maxBread = this.capacity - (this.flowers + this.coins);
-    this.breads = Math.min(this.breads + n, maxBread);
+    if (this.breadStack) {
+      const room = Math.max(0, this.breadStack.capacity - this.breadStack.count());
+      const add = Math.max(0, Math.min(n, room));
+      this.breads = Math.min(this.breads + add, this.breadStack.capacity);
+    } else {
+      const maxBread = this.capacity - (this.flowers + this.coins);
+      this.breads = Math.min(this.breads + n, maxBread);
+    }
     if (n > 0) this.handoffCooldown = this.handoffCooldownSec;
   }
   /** 从面包堆叠顶部移除 n 个并返回实际移除数量 */
@@ -401,8 +603,8 @@ export class PlayerController extends Component {
 
   /** 是否还能携带指定数量的面包（受总容量限制） */
   canCarryBread(n: number) {
-    const currentBread = this.breadStack ? this.breadStack.count() : this.breads;
-    return this.flowers + this.coins + currentBread + n <= this.capacity;
+    if (this.breadStack) return (this.breadStack.count() + n) <= this.breadStack.capacity;
+    return (this.breads + n) <= this.capacity;
   }
   /** 将一个面包物品加入堆叠，成功时增加计数并触发交接冷却 */
   tryAddBreadItem(item: Node) {
@@ -411,6 +613,9 @@ export class PlayerController extends Component {
     if (ci) { 
       ci.enabled = false; ci.destroy();
      }
+    const twFactory: any = (item as any).__factoryTween;
+    if (twFactory) { try { twFactory.stop(); } catch {} (item as any).__factoryTween = null; }
+    try { (tween as any).stopAllByTarget?.(item); } catch {}
     if (this.breadStack) {
       const ok = this.breadStack.tryAddItem(item);
       if (ok) this.breads += 1;
@@ -426,8 +631,8 @@ export class PlayerController extends Component {
   }
   /** 是否还能携带指定数量的金币（受总容量限制） */
   canCarryCoin(n: number) {
-    const currentCoin = this.coinStack ? this.coinStack.count() : this.coins;
-    return this.flowers + this.breads + currentCoin + n <= this.capacity;
+    if (this.coinStack) return (this.coinStack.count() + n) <= this.coinStack.capacity;
+    return (this.coins + n) <= this.capacity;
   }
   /** 将一个金币物品加入堆叠，成功时增加计数并触发交接冷却 */
   tryAddCoinItem(item: Node) {

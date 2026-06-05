@@ -34,8 +34,13 @@ export class UpgradeStation extends Component {
     const next = this.nextCost();
     if (this.label) this.label.string = next > 0 ? `${next}` : `Max`;
     if (next > 0) {
-      const removed = p.removeCoin(next);
-      if (removed >= next) this.applyNext(p);
+      const stackCount = p.coinStack ? (p.coinStack as any).count?.() as number : 0;
+      const overflow = Math.max(0, Economy.coins - stackCount);
+      const useGlobal = Math.min(next, overflow);
+      const spentGlobal = useGlobal > 0 ? Economy.spendUpTo(useGlobal) : 0;
+      const remainNeed = Math.max(0, next - spentGlobal);
+      const removed = remainNeed > 0 && stackCount > 0 ? p.removeCoin(Math.min(remainNeed, stackCount)) : 0;
+      if (spentGlobal + removed >= next) this.applyNext(p);
     }
   }
 

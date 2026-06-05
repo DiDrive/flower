@@ -13,6 +13,10 @@ CCEffect %{
         alphaThreshold:           { value: 0.5, target: albedoScaleAndCutoff.w, editor: { parent: USE_ALPHA_TEST, slide: true, range: [0, 1.0], step: 0.001 } }
         roughness:                { value: 0.8, target: pbrParams.y, editor: { slide: true, range: [0, 1.0], step: 0.001 } }
         metallic:                 { value: 0.6, target: pbrParams.z, editor: { slide: true, range: [0, 1.0], step: 0.001 } }
+        edgeWidth:                { value: 0.08, target: edgeParams.x, editor: { displayName: Edge Width, slide: true, range: [0, 0.5], step: 0.001 } }
+        edgeSoftness:             { value: 0.15, target: edgeParams.y, editor: { displayName: Edge Softness, slide: true, range: [0, 0.5], step: 0.001 } }
+        noiseScale:               { value: 8.0, target: edgeParams.z, editor: { displayName: Noise Scale, slide: true, range: [0, 32.0], step: 0.1 } }
+        noiseStrength:            { value: 0.2, target: edgeParams.w, editor: { displayName: Noise Strength, slide: true, range: [0, 1.0], step: 0.001 } }
     - &forward-add
       vert: standard-vs
       frag: standard-fs
@@ -67,6 +71,7 @@ CCProgram shared-ubos %{
     vec4 albedo;
     vec4 albedoScaleAndCutoff;
     vec4 pbrParams;
+    vec4 edgeParams;
   };
 }%
 
@@ -104,6 +109,22 @@ CCProgram surface-fragment %{
     #pragma define-meta ALBEDO_UV options([v_uv, v_uv1])
   #endif
 
+  float h12(vec2 p) {
+    float h = dot(p, vec2(127.1, 311.7));
+    return fract(sin(h) * 43758.5453123);
+  }
+
+  float n2(vec2 p) {
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+    float a = h12(i);
+    float b = h12(i + vec2(1.0, 0.0));
+    float c = h12(i + vec2(0.0, 1.0));
+    float d = h12(i + vec2(1.0, 1.0));
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    return mix(a, b, u.x) + (c - a) * u.y * (1.0 - u.x) + (d - b) * u.x * u.y;
+  }
+
   #if USE_ALPHA_TEST
     #pragma define-meta ALPHA_TEST_CHANNEL options([a, r])
   #endif
@@ -124,6 +145,15 @@ CCProgram surface-fragment %{
     #endif
 
     baseColor.rgb *= albedoScaleAndCutoff.xyz;
+
+    vec2 uv = ALBEDO_UV;
+    float dx = min(uv.x, 1.0 - uv.x);
+    float dy = min(uv.y, 1.0 - uv.y);
+    float d = min(dx, dy);
+    float n = n2(uv * edgeParams.z);
+    float w = edgeParams.x + (n - 0.5) * edgeParams.w;
+    float m = smoothstep(w, w + edgeParams.y, d);
+    baseColor.a *= m;
     return baseColor;
   }
 
